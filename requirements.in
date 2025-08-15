@@ -1,0 +1,56 @@
+# Django 核心框架
+Django==5.1.7
+djangorestframework==3.15.2
+
+# JWT 认证
+djangorestframework-simplejwt==5.5.0
+
+# 跨域处理
+django-cors-headers==4.7.0
+
+# 数据库
+mysqlclient==2.2.7
+
+# Redis 缓存
+django-redis==5.4.0
+redis==5.2.1
+
+# 异步任务队列
+celery==5.5.1
+
+# 环境变量管理
+python-dotenv==1.0.1
+
+# 密码哈希
+argon2-cffi==23.1.0
+
+# 时间处理
+pytz==2025.1
+
+# 图像处理 (用户头像)
+Pillow==11.1.0
+
+# 开发和测试工具
+pytest==8.3.5
+pytest-cov==6.1.1
+
+# 代码质量检查
+bandit==1.8.3
+
+# 日志和调试
+colorama==0.4.6
+
+# HTTP 客户端 (用于API测试)
+requests==2.32.3
+
+# 文件处理
+openpyxl==3.1.5
+PyMuPDF==1.24.14  # PDF 处理
+pymilvus==2.4.8  # 向量数据库
+
+# 数据分析 (如果需要)
+pandas==2.2.3
+numpy==2.2.5
+
+# 生产环境服务器 (可选)
+gunicorn==23.0.0

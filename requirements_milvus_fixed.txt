@@ -1,0 +1,8 @@
+# Milvus相关依赖
+pymilvus==2.6.0
+grpcio==1.60.0
+protobuf==3.20.0
+numpy==1.24.3
+
+# 其他常用依赖
+requests>=2.25.0
