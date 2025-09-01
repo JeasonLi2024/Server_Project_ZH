@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.conf import settings
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
@@ -58,6 +58,7 @@ def get_next_deletion_time():
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def send_email_code(request):
     """发送邮箱验证码"""
     serializer = EmailCodeSerializer(data=request.data)
@@ -108,6 +109,7 @@ def send_email_code(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def register(request):
     """用户注册"""
     serializer = RegisterSerializer(data=request.data)
@@ -155,6 +157,7 @@ def register(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def login(request):
     """用户登录（支持密码登录和邮箱验证码登录）"""
     serializer = LoginSerializer(data=request.data)
@@ -343,6 +346,7 @@ def verify(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def refresh(request):
     """刷新访问令牌"""
     serializer = RefreshTokenSerializer(data=request.data)
@@ -386,6 +390,7 @@ def change_password(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def reset_password_request(request):
     """请求密码重置"""
     serializer = PasswordResetRequestSerializer(data=request.data)
@@ -408,6 +413,7 @@ def reset_password_request(request):
 
 @api_view(['PUT'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def reset_password(request):
     """重置密码"""
     serializer = PasswordResetSerializer(data=request.data)
@@ -447,6 +453,7 @@ def login_logs(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def verify_email_code_view(request):
     """验证邮箱验证码（不消费）"""
     serializer = EmailCodeValidationSerializer(data=request.data)
@@ -471,6 +478,7 @@ def verify_email_code_view(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def check_email_exists(request):
     """检查邮箱是否已注册"""
     email = request.GET.get('email')
@@ -485,6 +493,7 @@ def check_email_exists(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@authentication_classes([])
 def check_username_exists(request):
     """检查用户名是否已存在"""
     username = request.GET.get('username')

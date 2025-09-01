@@ -15,7 +15,8 @@ def organization_logo_upload_path(instance, filename):
 
 
 class Organization(models.Model):
-    """组织模型 - 统一管理企业和大学"""
+    """组织模型 - 统一管理企业、大学、其他组织"""
+
     
     ORGANIZATION_TYPE_CHOICES = [
         ('enterprise', '企业'),
@@ -116,10 +117,6 @@ class Organization(models.Model):
                                   help_text='企业：法定代表人；大学：校长；其他：主要负责人')
     leader_title = models.CharField('负责人职务', max_length=50, blank=True)
     
-    # 注册信息（条件字段）
-    registration_number = models.CharField('注册号', max_length=50, blank=True,
-                                         help_text='企业：工商注册号；大学：办学许可证号；其他：登记证号')
-    
     # 分类信息（条件字段）
     enterprise_type = models.CharField('企业类型', max_length=20, 
                                      choices=ENTERPRISE_TYPE_CHOICES, blank=True, null=True)
@@ -185,8 +182,8 @@ class Organization(models.Model):
     
     class Meta:
         db_table = 'organization'
-        verbose_name = '组织'
-        verbose_name_plural = '组织'
+        verbose_name = '01-组织'
+        verbose_name_plural = '01-组织'
         indexes = [
             models.Index(fields=['organization_type']),
             models.Index(fields=['name']),
@@ -242,8 +239,8 @@ class Organization(models.Model):
         if self.organization_type == 'other':
             # 根据其他组织的具体类型调整必填字段
             if self.other_type in ['government', 'ngo', 'foundation']:
-                # 政府机构、社会团体、基金会：需要额外提供监管机构和注册号
-                base_fields.extend(['regulatory_authority', 'registration_number'])
+                # 政府机构、社会团体、基金会：需要额外提供监管机构
+                base_fields.extend(['regulatory_authority'])
             elif self.other_type in ['hospital', 'research_institute']:
                 # 医院、研究机构：需要额外提供许可证信息
                 base_fields.extend(['license_info'])
@@ -258,7 +255,7 @@ class Organization(models.Model):
         display_names = {
             'code': self._get_code_display_name(),
             'leader_name': self._get_leader_display_name(),
-            'registration_number': self._get_registration_display_name(),
+
             'contact_phone': '联系电话',
             'contact_email': '联系邮箱',
             'address': '详细地址',
@@ -302,22 +299,7 @@ class Organization(models.Model):
                 return '主要负责人'
         return '负责人'
     
-    def _get_registration_display_name(self):
-        """根据组织类型返回注册号字段的显示名称"""
-        if self.organization_type == 'enterprise':
-            return '工商注册号'
-        elif self.organization_type == 'university':
-            return '办学许可证号'
-        elif self.organization_type == 'other':
-            if self.other_type == 'government':
-                return '机构设立批文号'
-            elif self.other_type in ['ngo', 'foundation']:
-                return '社会组织登记证号'
-            elif self.other_type == 'hospital':
-                return '医疗机构执业许可证号'
-            else:
-                return '登记证号'
-        return '注册号'
+
     
     def save(self, *args, **kwargs):
         self.clean()
@@ -376,8 +358,8 @@ class OrganizationOperationLog(models.Model):
     
     class Meta:
         db_table = 'organization_operation_log'
-        verbose_name = '组织操作日志'
-        verbose_name_plural = '组织操作日志'
+        verbose_name = '02-组织操作日志'
+        verbose_name_plural = '02-组织操作日志'
         indexes = [
             models.Index(fields=['organization', 'created_at']),
             models.Index(fields=['operator', 'created_at']),
@@ -412,8 +394,8 @@ class OrganizationConfig(models.Model):
     
     class Meta:
         db_table = 'organization_config'
-        verbose_name = '组织配置'
-        verbose_name_plural = '组织配置'
+        verbose_name = '03-组织配置'
+        verbose_name_plural = '03-组织配置'
     
     def __str__(self):
         return f"{self.organization.name} - 配置"

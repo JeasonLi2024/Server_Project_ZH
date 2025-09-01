@@ -4,4 +4,4 @@ from django.apps import AppConfig
 class AuthenticationConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'authentication'
-    verbose_name = "认证管理"'认证管理'
+    verbose_name = '认证管理'

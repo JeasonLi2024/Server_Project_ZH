@@ -3,7 +3,7 @@ from django.shortcuts import get_object_or_404
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.conf import settings
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.db.models import Q
@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def search_organizations(request):
     """搜索组织（支持分页）"""
     try:
-        from authentication.pagination import paginate_queryset
+        from common_utils import paginate_queryset
         
         query = request.GET.get('search', '').strip()  # 支持search参数
         if not query:
@@ -115,7 +115,7 @@ def search_organizations(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def organization_detail(request, organization_id):
     """获取组织详细信息"""
     try:
@@ -170,7 +170,6 @@ def organization_detail(request, organization_id):
         if organization.organization_type == 'enterprise':
             org_data['enterprise_type'] = organization.enterprise_type
             org_data['enterprise_type_display'] = organization.get_enterprise_type_display() if organization.enterprise_type else None
-            org_data['registration_number'] = organization.registration_number
         elif organization.organization_type == 'university':
             org_data['university_type'] = organization.university_type
             org_data['university_type_display'] = organization.get_university_type_display() if organization.university_type else None

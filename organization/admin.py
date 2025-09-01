@@ -5,7 +5,7 @@ from .models import Organization, OrganizationOperationLog, OrganizationConfig
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
     """组织管理"""
-    list_display = ['name', 'organization_type', 'type_display', 'status', 'created_at']
+    list_display = ['id', 'name', 'organization_type', 'type_display', 'status', 'created_at']
     list_filter = ['organization_type', 'status', 'enterprise_type', 'university_type', 'other_type', 'organization_nature', 'scale']
     search_fields = ['name', 'code', 'contact_person', 'contact_email', 'business_scope', 'regulatory_authority']
     readonly_fields = ['created_at', 'updated_at']

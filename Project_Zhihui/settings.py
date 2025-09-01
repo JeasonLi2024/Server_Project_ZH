@@ -52,14 +52,18 @@ INSTALLED_APPS = [
     "user",
     "authentication",
     "organization",
-    "project",
     "process_pdf",
     "tag_db_writer",
+    "project",
+    "studentproject",
+    "projectscore",
+    "read_search",
 ]
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -161,6 +165,9 @@ STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',
     'django.contrib.staticfiles.finders.AppDirectoriesFinder',
 ]
+
+# WhiteNoise configuration
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files (User uploaded files)
 MEDIA_URL = "/media/"
@@ -304,6 +311,16 @@ EMAIL_VERIFICATION_CODE_LENGTH = 6
 # 默认头像URL
 DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_1.svg"
 
+# Milvus Configuration
+MILVUS_HOST = os.getenv('MILVUS_HOST', '100.116.251.123')
+MILVUS_PORT = os.getenv('MILVUS_PORT', '19530')
+MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'enterprise_vectors')
+
+# Embedding Service Configuration
+EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://100.116.251.123:11434/api/embed')
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'bge-m3:567m')
+EMBEDDING_DIM = int(os.getenv('EMBEDDING_DIM', '1024'))
+
 # Logging
 LOGGING = {
     'version': 1,
@@ -344,6 +361,26 @@ LOGGING = {
         'user': {
             'handlers': ['console', 'file'],
             'level': 'DEBUG',
+            'propagate': False,
+        },
+        'authentication': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'studentproject': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'read_search': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'read_search.milvus_cache_service': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
             'propagate': False,
         },
     },

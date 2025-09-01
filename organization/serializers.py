@@ -14,7 +14,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
         model = Organization
         fields = [
             'id', 'name', 'code', 'leader_name', 'leader_title',
-            'registration_number', 'organization_type', 'enterprise_type', 'university_type',
+            'organization_type', 'enterprise_type', 'university_type',
             'other_type', 'organization_nature', 'business_scope', 'regulatory_authority',
             'license_info', 'service_target', 'industry_or_discipline', 'scale',
             'contact_person', 'contact_position', 'contact_phone', 'contact_email',
@@ -322,7 +322,7 @@ class OrganizationVerificationMaterialsSerializer(serializers.ModelSerializer):
         model = Organization
         fields = [
             # 基本信息
-            'code', 'leader_name', 'leader_title', 'registration_number',
+            'code', 'leader_name', 'leader_title',
             'contact_person', 'contact_position', 'contact_phone', 'contact_email',
             'address', 'postal_code', 'description', 'website', 'established_date',
             # 企业特定字段

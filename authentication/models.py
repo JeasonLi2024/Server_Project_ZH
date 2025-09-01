@@ -23,8 +23,8 @@ class EmailVerificationCode(models.Model):
     
     class Meta:
         db_table = 'email_verification_code'
-        verbose_name = '邮箱验证码'
-        verbose_name_plural = '邮箱验证码'
+        verbose_name = '00-邮箱验证码'
+        verbose_name_plural = '00-邮箱验证码'
         indexes = [
             models.Index(fields=['email', 'code_type']),
             models.Index(fields=['created_at']),
@@ -61,8 +61,8 @@ class LoginLog(models.Model):
     
     class Meta:
         db_table = 'login_log'
-        verbose_name = '登录日志'
-        verbose_name_plural = '登录日志'
+        verbose_name = '01-账户登录日志'
+        verbose_name_plural = '01-账户登录日志'
         indexes = [
             models.Index(fields=['user', 'created_at']),
             models.Index(fields=['ip_address']),
@@ -120,8 +120,8 @@ class AccountDeletionLog(models.Model):
     
     class Meta:
         db_table = 'account_deletion_log'
-        verbose_name = '账户注销日志'
-        verbose_name_plural = '账户注销日志'
+        verbose_name = '02-账户注销日志'
+        verbose_name_plural = '02-账户注销日志'
         indexes = [
             models.Index(fields=['user_id']),
             models.Index(fields=['status']),

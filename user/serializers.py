@@ -1,9 +1,29 @@
 from rest_framework import serializers
-from .models import User, Student, OrganizationUser
+from .models import User, Student, OrganizationUser, Tag1, Tag2, Tag1StuMatch, Tag2StuMatch
 from authentication.utils import get_default_avatar_url
 from common_utils import build_media_url
 import os
 from django.conf import settings
+
+
+class UserBasicSerializer(serializers.ModelSerializer):
+    """用户基本信息序列化器 - 用于评论等场景"""
+    avatar = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'real_name', 'avatar']
+    
+    def get_avatar(self, obj):
+        """获取头像URL"""
+        request = self.context.get('request')
+        
+        if obj.avatar:
+            return build_media_url(obj.avatar, request)
+        else:
+            # 返回默认头像的完整绝对URL
+            default_avatar_path = get_default_avatar_url()
+            return build_media_url(default_avatar_path, request)
 
 
 class AvatarUploadSerializer(serializers.ModelSerializer):
@@ -61,11 +81,61 @@ class AvatarUploadSerializer(serializers.ModelSerializer):
         return instance
 
 
+class Tag1Serializer(serializers.ModelSerializer):
+    """兴趣标签序列化器"""
+    class Meta:
+        model = Tag1
+        fields = ['id', 'value']
+
+
+class Tag2Serializer(serializers.ModelSerializer):
+    """能力标签序列化器"""
+    class Meta:
+        model = Tag2
+        fields = ['id', 'post', 'category', 'subcategory', 'specialty', 'level']
+
+
 class StudentProfileSerializer(serializers.ModelSerializer):
     """学生资料序列化器"""
     class Meta:
         model = Student
         fields = ['student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation']
+
+
+class StudentProfileUpdateSerializer(serializers.ModelSerializer):
+    """学生资料更新序列化器（包含标签管理）"""
+    interest_tags = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        help_text="兴趣标签ID列表"
+    )
+    ability_tags = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        help_text="能力标签ID列表"
+    )
+    
+    class Meta:
+        model = Student
+        fields = ['student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation', 'interest_tags', 'ability_tags']
+    
+    def validate_interest_tags(self, value):
+        """验证兴趣标签ID"""
+        if value:
+            existing_ids = set(Tag1.objects.filter(id__in=value).values_list('id', flat=True))
+            invalid_ids = set(value) - existing_ids
+            if invalid_ids:
+                raise serializers.ValidationError(f"无效的兴趣标签ID: {list(invalid_ids)}")
+        return value
+    
+    def validate_ability_tags(self, value):
+        """验证能力标签ID（只允许level=2的标签）"""
+        if value:
+            existing_ids = set(Tag2.objects.filter(id__in=value, level=2).values_list('id', flat=True))
+            invalid_ids = set(value) - existing_ids
+            if invalid_ids:
+                raise serializers.ValidationError(f"无效的能力标签ID或标签级别不正确: {list(invalid_ids)}")
+        return value
 
         
 class OrganizationUserSerializer(serializers.ModelSerializer):
@@ -76,8 +146,7 @@ class OrganizationUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrganizationUser
         fields = [
-            'id', 'organization', 'position', 'department', 'permission', 'status',
-            'created_at', 'updated_at'
+            'id', 'organization', 'position', 'department', 'permission', 'status', 'created_at', 'updated_at'
         ]
     
     def get_organization(self, obj):
@@ -129,7 +198,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 'status_display': student.get_status_display(),
                 'expected_graduation': student.expected_graduation,
                 'interests': [{'id': tag.id, 'value': tag.value} for tag in student.interests.all()],
-                'skills': [{'id': tag.id, 'post': tag.post, 'subclasses': tag.subclasses, 'subdivision': tag.subdivision} for tag in student.skills.all()],
+                'skills': [{'id': tag.id, 'post': tag.post, 'category': tag.category, 'subcategory': tag.subcategory, 'specialty': tag.specialty, 'level': tag.level} for tag in student.skills.all()],
                 'created_at': student.created_at,
                 'updated_at': student.updated_at
             }
@@ -158,7 +227,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
                     'code': organization.code,
                     'leader_name': organization.leader_name,
                     'leader_title': organization.leader_title,
-                    'registration_number': organization.registration_number,
                     'organization_type': organization.organization_type,
                     'organization_type_display': organization.get_organization_type_display(),
                     'enterprise_type': organization.enterprise_type,
@@ -201,7 +269,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 'permission_display': organization_user.get_permission_display(),
                 'status': organization_user.status,
                 'status_display': organization_user.get_status_display(),
-                'joined_at': organization_user.created_at,
+                'created_at': organization_user.created_at,
                 'updated_at': organization_user.updated_at,
                 'organization': organization_data
             }
@@ -212,12 +280,12 @@ class OrganizationUserUpdateSerializer(serializers.ModelSerializer):
     """组织用户资料更新序列化器"""
     class Meta:
         model = OrganizationUser
-        fields = ['position']
+        fields = ['position', 'department']
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
-    """用户资料更新序列化器"""
-    student_profile = StudentProfileSerializer(required=False)
+    """用户更新序列化器"""
+    student_profile = StudentProfileUpdateSerializer(required=False)
     organization_user_profile = OrganizationUserUpdateSerializer(required=False)
     
     class Meta:
@@ -232,6 +300,26 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         student_data = validated_data.pop('student_profile', None)
         if student_data and instance.user_type == 'student':
             student_profile, created = Student.objects.get_or_create(user=instance)
+            
+            # 处理兴趣标签
+            interest_tags = student_data.pop('interest_tags', None)
+            if interest_tags is not None:
+                # 删除现有的兴趣标签关联
+                Tag1StuMatch.objects.filter(student=student_profile).delete()
+                # 创建新的兴趣标签关联
+                for tag_id in interest_tags:
+                    Tag1StuMatch.objects.create(student=student_profile, tag1_id=tag_id)
+            
+            # 处理能力标签
+            ability_tags = student_data.pop('ability_tags', None)
+            if ability_tags is not None:
+                # 删除现有的能力标签关联
+                Tag2StuMatch.objects.filter(student=student_profile).delete()
+                # 创建新的能力标签关联
+                for tag_id in ability_tags:
+                    Tag2StuMatch.objects.create(student=student_profile, tag2_id=tag_id)
+            
+            # 更新其他学生资料字段
             for attr, value in student_data.items():
                 setattr(student_profile, attr, value)
             student_profile.save()

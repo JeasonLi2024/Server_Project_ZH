@@ -27,10 +27,12 @@ urlpatterns = [
     path('api/v1/auth/', include('authentication.urls')),
     path('api/v1/user/', include('user.urls')),
     path('api/v1/organization/', include('organization.urls')),
-    path('api/v1/', include('project.urls')),
+    path('api/v1/project/', include('project.urls')),
+    path('api/v1/studentproject/', include('studentproject.urls')),
+    path('api/v1/projectscore/', include('projectscore.urls')),
     path('api/v1/pdf/', include('process_pdf.urls')),
     path('api/v1/tag/', include('tag_db_writer.urls')),
-
+    path('api/v1/search/', include('read_search.urls')),
 ]
 
 # 开发环境下提供静态文件和媒体文件服务
