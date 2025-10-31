@@ -966,7 +966,7 @@ class VirtualFileViewSet(viewsets.ModelViewSet):
                             user=user, 
                             organization=requirement.organization
                         )
-                        return org_user.role in ['owner', 'admin']
+                        return org_user.permission in ['owner', 'admin']
                     except OrganizationUser.DoesNotExist:
                         return False
                 
@@ -993,7 +993,7 @@ class VirtualFileViewSet(viewsets.ModelViewSet):
                             user=user, 
                             organization=resource.create_person.organization
                         )
-                        return org_user.role in ['owner', 'admin']
+                        return org_user.permission in ['owner', 'admin']
                     except OrganizationUser.DoesNotExist:
                         return False
                 

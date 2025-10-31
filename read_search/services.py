@@ -20,7 +20,7 @@ class SearchService:
     
     def get_student_matched_requirements(self, student_id: int) -> List[Dict[str, Any]]:
         """
-        获取学生匹配的项目需求列表（初筛）
+        获取学生匹配的项目需求列表（初筛）- 实时查询，不使用缓存
         
         Args:
             student_id (int): 学生ID
@@ -28,14 +28,6 @@ class SearchService:
         Returns:
             List[Dict]: 匹配的项目需求列表
         """
-        cache_key = f"student_requirements_{student_id}"
-        
-        # 尝试从缓存获取
-        cached_result = cache.get(cache_key)
-        if cached_result is not None:
-            logger.info(f"从缓存获取学生{student_id}的匹配需求")
-            return cached_result
-        
         try:
             # 使用Django ORM查询TagMatch模型
             tag_matches = TagMatch.objects.filter(
@@ -65,9 +57,7 @@ class SearchService:
                 }
                 result.append(requirement_data)
             
-            # 缓存结果
-            cache.set(cache_key, result, self.cache_timeout)
-            logger.info(f"为学生{student_id}找到{len(result)}个匹配的项目需求")
+            logger.info(f"实时查询为学生{student_id}找到{len(result)}个匹配的项目需求")
             
             return result
             
@@ -77,35 +67,31 @@ class SearchService:
     
     def get_requirement_ids_for_student(self, student_id: int) -> List[int]:
         """
-        获取学生匹配的项目需求ID列表
+        获取学生匹配的项目需求ID列表（去重）
         
         Args:
             student_id (int): 学生ID
             
         Returns:
-            List[int]: 项目需求ID列表
+            List[int]: 去重后的项目需求ID列表
         """
         matched_requirements = self.get_student_matched_requirements(student_id)
-        return [req["Pid"] for req in matched_requirements]
+        # 使用set去重，然后转换回list并保持顺序
+        requirement_ids = [req["Pid"] for req in matched_requirements]
+        return list(dict.fromkeys(requirement_ids))  # 保持顺序的去重
     
     def clear_student_cache(self, student_id: int) -> bool:
         """
-        清除学生相关的缓存
+        清除学生相关的缓存（已禁用缓存，此方法保留兼容性）
         
         Args:
             student_id (int): 学生ID
             
         Returns:
-            bool: 是否成功清除缓存
+            bool: 总是返回True（缓存已禁用）
         """
-        try:
-            cache_key = f"student_requirements_{student_id}"
-            cache.delete(cache_key)
-            logger.info(f"已清除学生{student_id}的缓存")
-            return True
-        except Exception as e:
-            logger.error(f"清除学生{student_id}缓存时出错: {e}")
-            return False
+        logger.info(f"缓存已禁用，无需清除学生{student_id}的缓存")
+        return True
 
 
 class CacheService:

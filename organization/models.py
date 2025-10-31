@@ -168,6 +168,8 @@ class Organization(models.Model):
     # 状态信息（通用）
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='pending')
     verified_at = models.DateTimeField('认证时间', blank=True, null=True)
+    verification_comment = models.TextField('认证意见', blank=True, 
+                                          help_text='管理员审核时的意见，通过时可填写"通过"，拒绝时需注明具体原因')
     verification_image = models.JSONField(
         '认证图片',
         default=list,
@@ -323,27 +325,34 @@ class OrganizationOperationLog(models.Model):
     
     # 操作类型分类
     OPERATION_CHOICES = [
-        # 成员审核类操作
+        # 成员管理操作
         ('member_approve', '审核通过成员'),
         ('member_reject', '拒绝成员申请'),
-        
-        # 成员状态管理
+        ('member_invite', '邀请成员'),
         ('member_suspend', '暂停成员'),
         ('member_activate', '激活成员'),
         ('member_reactivate', '重新激活成员'),
         ('member_remove', '移除成员'),
         ('member_status_update', '更新成员状态'),
+        ('member_leave', '成员退出组织'),
         
-        # 权限管理
+        # 权限管理操作
         ('permission_grant_admin', '授予管理员权限'),
         ('permission_revoke_admin', '撤销管理员权限'),
         ('permission_grant_member', '授予成员权限'),
         ('permission_revoke_member', '撤销成员权限'),
         
-        # 组织管理
+        # 组织管理操作
         ('organization_update', '更新组织信息'),
         ('organization_config_update', '更新组织配置'),
         ('verification_materials_submit', '提交认证材料'),
+        
+        # 组织切换操作
+        ('join_application_submit', '提交加入申请'),
+        ('join_application_approve', '批准加入申请'),
+        ('join_application_reject', '拒绝加入申请'),
+        ('join_application_cancel', '取消加入申请'),
+        ('invitation_code_join', '通过邀请码加入'),
     ]
     
     operator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='organization_operations', verbose_name='操作者')
@@ -399,3 +408,117 @@ class OrganizationConfig(models.Model):
     
     def __str__(self):
         return f"{self.organization.name} - 配置"
+
+
+class University(models.Model):
+    """高等学校模型"""
+    
+    id = models.AutoField(primary_key=True)
+    school = models.CharField('学校名称', max_length=100, unique=True)
+    
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    
+    class Meta:
+        db_table = 'university'
+        verbose_name = '04-高等学校'
+        verbose_name_plural = '04-高等学校'
+        indexes = [
+            models.Index(fields=['school']),
+        ]
+    
+    def __str__(self):
+        return self.school
+
+
+class OrganizationJoinApplication(models.Model):
+    """组织加入申请模型"""
+    
+    STATUS_CHOICES = [
+        ('pending', '待审核'),
+        ('approved', '已通过'),
+        ('rejected', '已拒绝'),
+        ('cancelled', '已取消'),
+    ]
+    
+    # 基本信息
+    applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='join_applications', verbose_name='申请人')
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='join_applications', verbose_name='目标组织')
+    
+    # 申请信息
+    application_reason = models.TextField('申请理由', help_text='用户申请加入组织的理由说明')
+    status = models.CharField('申请状态', max_length=20, choices=STATUS_CHOICES, default='pending')
+    
+    # 审核信息
+    reviewer = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, 
+                                related_name='reviewed_applications', verbose_name='审核人')
+    review_comment = models.TextField('审核意见', blank=True, help_text='审核人的意见或拒绝理由')
+    reviewed_at = models.DateTimeField('审核时间', null=True, blank=True)
+    
+    # 时间戳
+    created_at = models.DateTimeField('申请时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    
+    class Meta:
+        db_table = 'organization_join_application'
+        verbose_name = '05-组织加入申请'
+        verbose_name_plural = '05-组织加入申请'
+        indexes = [
+            models.Index(fields=['applicant', 'status']),
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['status', 'created_at']),
+        ]
+        # 确保同一用户对同一组织只能有一个待审核的申请
+        unique_together = [('applicant', 'organization', 'status')]
+    
+    def __str__(self):
+        return f"{self.applicant.username} 申请加入 {self.organization.name}"
+    
+    def approve(self, reviewer, comment=''):
+        """批准申请"""
+        from django.utils import timezone
+        
+        self.status = 'approved'
+        self.reviewer = reviewer
+        self.review_comment = comment
+        self.reviewed_at = timezone.now()
+        self.save()
+        
+        # 创建组织用户关系
+        from user.models import OrganizationUser
+        OrganizationUser.objects.create(
+            user=self.applicant,
+            organization=self.organization,
+            permission='member',
+            status='approved'
+        )
+    
+    def reject(self, reviewer, comment=''):
+        """拒绝申请"""
+        from django.utils import timezone
+        
+        self.status = 'rejected'
+        self.reviewer = reviewer
+        self.review_comment = comment
+        self.reviewed_at = timezone.now()
+        self.save()
+    
+    def cancel(self):
+        """取消申请"""
+        self.status = 'cancelled'
+        self.save()
+    
+    @property
+    def is_pending(self):
+        """是否为待审核状态"""
+        return self.status == 'pending'
+    
+    @property
+    def is_approved(self):
+        """是否已通过"""
+        return self.status == 'approved'
+    
+    @property
+    def is_rejected(self):
+        """是否已拒绝"""
+        return self.status == 'rejected'

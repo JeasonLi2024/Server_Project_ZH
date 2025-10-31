@@ -115,16 +115,13 @@ def get_interest_tags(request):
         tags = tags.order_by('value')
         
         # 使用通用分页工具
-        from common_utils import paginate_queryset
-        pagination_result = paginate_queryset(request, tags, default_page_size=20)
-        page_data = pagination_result['page_data']
-        pagination_info = pagination_result['pagination_info']
+        # from common_utils import paginate_queryset
+        # pagination_result = paginate_queryset(request, tags, default_page_size=20)
+        # page_data = pagination_result['page_data']
+        # pagination_info = pagination_result['pagination_info']
         
-        serializer = Tag1Serializer(page_data, many=True)
-        return APIResponse.success({
-            'tags': serializer.data,
-            'pagination': pagination_info
-        })
+        serializer = Tag1Serializer(tags, many=True)
+        return APIResponse.success(serializer.data)
     except Exception as e:
         logger.error(f"获取兴趣标签失败: {str(e)}")
         return APIResponse.server_error('获取兴趣标签失败，请稍后重试')

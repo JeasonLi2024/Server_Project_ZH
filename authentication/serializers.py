@@ -5,9 +5,10 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from user.models import User, Student as StudentProfile, OrganizationUser
 from organization.models import Organization
-from .models import EmailVerificationCode, LoginLog, AccountDeletionLog
+from .models import EmailVerificationCode, LoginLog, AccountDeletionLog, OrganizationInvitationCode
 from .utils import check_password_strength, assign_random_avatar
 from .verification_utils import validate_email_code
+from .invitation_utils import validate_invitation_code
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -42,18 +43,19 @@ class RegisterSerializer(serializers.Serializer):
     
     # 学生特有字段
     student_id = serializers.CharField(max_length=20, required=False, help_text="学号")
-    school = serializers.CharField(max_length=100, required=False, help_text="学校")
+    school_id = serializers.IntegerField(required=False, help_text="学校ID")
     major = serializers.CharField(max_length=100, required=False, help_text="专业")
     education = serializers.CharField(max_length=20, required=False, help_text="学历层次")
     grade = serializers.CharField(max_length=10, required=False, help_text="年级")
     
     # 组织用户特有字段
     registration_choice = serializers.ChoiceField(
-        choices=[('existing', '加入现有组织'), ('new', '创建新组织')],
+        choices=[('existing', '加入现有组织'), ('new', '创建新组织'), ('invitation', '邀请码注册')],
         required=False,
-        help_text="注册选择：existing-加入现有组织，new-创建新组织"
+        help_text="注册选择：existing-加入现有组织，new-创建新组织，invitation-邀请码注册"
     )
     organization_id = serializers.IntegerField(required=False, help_text="选择的组织ID（当registration_choice为existing时必填）")
+    invitation_code = serializers.CharField(max_length=32, required=False, help_text="邀请码（当registration_choice为invitation时必填）")
     
     # 新组织创建字段（当registration_choice为new时必填）
     organization_name = serializers.CharField(max_length=200, required=False, help_text="组织名称")
@@ -92,10 +94,19 @@ class RegisterSerializer(serializers.Serializer):
         
         # 根据用户类型创建对应的profile
         if user_type == 'student':
+            from organization.models import University
+            school_id = validated_data.get('school_id')
+            school_instance = None
+            if school_id:
+                try:
+                    school_instance = University.objects.get(id=school_id)
+                except University.DoesNotExist:
+                    pass
+            
             StudentProfile.objects.create(
                 user=user,
                 student_id=validated_data.get('student_id'),
-                school=validated_data.get('school'),
+                school=school_instance,
                 major=validated_data.get('major'),
                 education_level=validated_data.get('education'),
                 grade=validated_data.get('grade')
@@ -104,6 +115,7 @@ class RegisterSerializer(serializers.Serializer):
             # 处理组织用户注册
             registration_choice = validated_data.get('registration_choice')
             organization_id = validated_data.get('organization_id')
+            invitation_code = validated_data.get('invitation_code')
             
             if registration_choice == 'new':
                 # 创建新组织
@@ -133,6 +145,17 @@ class RegisterSerializer(serializers.Serializer):
                     organization = Organization.objects.get(id=organization_id, status='verified')
                 except Organization.DoesNotExist:
                     raise serializers.ValidationError("选择的组织不存在或未通过认证")
+            elif registration_choice == 'invitation' and invitation_code:
+                # 邀请码注册
+                organization = validated_data.get('_invitation_organization')
+                if not organization:
+                    raise serializers.ValidationError("邀请码对应的组织信息获取失败")
+                
+                # 使用邀请码（增加使用次数）
+                from .invitation_utils import use_invitation_code
+                success, organization, message = use_invitation_code(invitation_code, user)
+                if not success:
+                    raise serializers.ValidationError(f"邀请码使用失败：{message}")
             else:
                 raise serializers.ValidationError("必须选择注册方式并提供相应信息")
             
@@ -140,10 +163,10 @@ class RegisterSerializer(serializers.Serializer):
             OrganizationUser.objects.create(
                 user=user,
                 organization=organization,
-                position=validated_data.get('position', ''),
+                position=validated_data.get('position', '成员'),  # 邀请码注册默认为成员
                 department=validated_data.get('department', ''),
-                permission='owner' if registration_choice == 'new' else 'pending',  # 创建组织的用户为所有者，加入现有组织的用户为待审核
-                status='approved' if registration_choice == 'new' else 'pending'  # 创建组织的用户直接通过审核，加入现有组织的用户待审核
+                permission='owner' if registration_choice == 'new' else 'member',  # 创建组织的用户为所有者，其他为成员
+                status='approved' if registration_choice in ['new', 'invitation'] else 'pending'  # 创建组织和邀请码注册直接通过审核
             )
         
         return user
@@ -151,6 +174,14 @@ class RegisterSerializer(serializers.Serializer):
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("该邮箱已被注册")
+        return value
+    
+    def validate_school_id(self, value):
+        """验证学校ID"""
+        if value:
+            from organization.models import University
+            if not University.objects.filter(id=value).exists():
+                raise serializers.ValidationError("无效的学校ID")
         return value
     
     def validate(self, attrs):
@@ -177,7 +208,7 @@ class RegisterSerializer(serializers.Serializer):
         
         if user_type == 'student':
             # 学生用户必填字段验证
-            required_fields = ['student_id', 'school', 'major', 'education', 'grade']
+            required_fields = ['student_id', 'school_id', 'major', 'education', 'grade']
             for field in required_fields:
                 if not attrs.get(field):
                     raise serializers.ValidationError({field: [f"学生用户必须填写{field}"]})
@@ -186,6 +217,7 @@ class RegisterSerializer(serializers.Serializer):
             # 组织用户必填字段验证
             registration_choice = attrs.get('registration_choice')
             organization_id = attrs.get('organization_id')
+            invitation_code = attrs.get('invitation_code')
             
             if not registration_choice:
                 raise serializers.ValidationError({'registration_choice': ['组织用户必须选择注册方式']})
@@ -200,11 +232,23 @@ class RegisterSerializer(serializers.Serializer):
                 for field in required_fields:
                     if not attrs.get(field):
                         raise serializers.ValidationError({field: [f"创建新组织时必须填写{field}"]})
+            elif registration_choice == 'invitation':
+                # 邀请码注册时必须提供invitation_code
+                if not invitation_code:
+                    raise serializers.ValidationError({'invitation_code': ['邀请码注册时必须提供邀请码']})
+                
+                # 验证邀请码
+                is_valid, message, organization = validate_invitation_code(invitation_code)
+                if not is_valid:
+                    raise serializers.ValidationError({'invitation_code': message})
+                
+                # 将组织信息存储到attrs中，供create方法使用
+                attrs['_invitation_organization'] = organization
             else:
                 raise serializers.ValidationError({'registration_choice': ['无效的注册选择']})
             
-            # 职位是必填的
-            if not attrs.get('position'):
+            # 职位是必填的（邀请码注册除外，因为可能由组织预设）
+            if registration_choice != 'invitation' and not attrs.get('position'):
                 raise serializers.ValidationError({'position': ['组织用户必须填写职位']})
         
         return attrs
@@ -298,6 +342,9 @@ class AccountDeletionCancelSerializer(serializers.Serializer):
         return value
 
 
+
+
+
 class LoginSerializer(serializers.Serializer):
     """统一登录序列化器"""
     type = serializers.ChoiceField(
@@ -359,6 +406,9 @@ class LoginSerializer(serializers.Serializer):
         return attrs
 
 
+
+
+
 class PasswordChangeSerializer(serializers.Serializer):
     """修改密码序列化器"""
     old_password = serializers.CharField(required=True, write_only=True)
@@ -410,10 +460,56 @@ class PasswordResetSerializer(serializers.Serializer):
         confirm_password = attrs.get('confirm_password')
         
         # 验证邮箱验证码
-        is_valid, message = validate_email_code(email, email_code, 'reset')
+        is_valid, message = validate_email_code(email, email_code, 'reset_password')
         if not is_valid:
             raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
         
+        if new_password != confirm_password:
+            raise serializers.ValidationError({"confirm_password": "两次输入的密码不一致"})
+        
+        # 验证密码强度
+        is_strong, message = check_password_strength(new_password)
+        if not is_strong:
+            raise serializers.ValidationError({"new_password": message})
+        
+        return attrs
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    """忘记密码序列化器 - 完整的忘记密码流程"""
+    email = serializers.EmailField(required=True, help_text="注册邮箱地址")
+    email_code = serializers.CharField(max_length=10, required=True, help_text="邮箱验证码")
+    new_password = serializers.CharField(
+        min_length=8, 
+        max_length=128, 
+        write_only=True, 
+        help_text="新密码，至少8位字符"
+    )
+    confirm_password = serializers.CharField(
+        min_length=8, 
+        max_length=128, 
+        write_only=True, 
+        help_text="确认新密码"
+    )
+    
+    def validate_email(self, value):
+        """验证邮箱是否已注册"""
+        if not User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("该邮箱未注册")
+        return value
+    
+    def validate(self, attrs):
+        email = attrs.get('email')
+        email_code = attrs.get('email_code')
+        new_password = attrs.get('new_password')
+        confirm_password = attrs.get('confirm_password')
+        
+        # 验证邮箱验证码
+        is_valid, message = validate_email_code(email, email_code, 'reset_password')
+        if not is_valid:
+            raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
+        
+        # 验证两次密码是否一致
         if new_password != confirm_password:
             raise serializers.ValidationError({"confirm_password": "两次输入的密码不一致"})
         
@@ -429,7 +525,7 @@ class EmailCodeSerializer(serializers.Serializer):
     """邮箱验证码序列化器"""
     email = serializers.EmailField(required=True)
     code_type = serializers.ChoiceField(
-        choices=['register', 'login', 'reset', 'change_email', 'delete_account'], 
+        choices=['register', 'login', 'reset_password', 'change_email', 'delete_account'], 
         default='register'
     )
 
@@ -532,3 +628,50 @@ class ChangeEmailSerializer(serializers.Serializer):
             raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
         
         return attrs
+
+
+class OrganizationInvitationCodeSerializer(serializers.ModelSerializer):
+    """组织邀请码序列化器"""
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = OrganizationInvitationCode
+        fields = [
+            'id', 'code', 'organization', 'organization_name', 
+            'status', 'status_display', 'created_by', 'created_by_username',
+            'created_at', 'expires_at', 'updated_at', 'used_count', 'max_uses'
+        ]
+        read_only_fields = [
+            'id', 'code', 'organization', 'organization_name',
+            'created_by', 'created_by_username', 'created_at', 'expires_at', 'updated_at'
+        ]
+
+
+class InvitationCodeGenerateSerializer(serializers.Serializer):
+    """生成邀请码序列化器"""
+    expire_days = serializers.IntegerField(
+        default=30,
+        min_value=1,
+        max_value=365,
+        help_text="邀请码有效期天数，默认30天"
+    )
+    max_uses = serializers.IntegerField(
+        default=100, 
+        min_value=1, 
+        max_value=1000,
+        help_text="邀请码最大使用次数，默认100次"
+    )
+
+
+class InvitationCodeValidateSerializer(serializers.Serializer):
+    """验证邀请码序列化器"""
+    code = serializers.CharField(max_length=32, help_text="邀请码")
+    
+    def validate_code(self, value):
+        from .invitation_utils import validate_invitation_code
+        is_valid, message, organization = validate_invitation_code(value)
+        if not is_valid:
+            raise serializers.ValidationError(message)
+        return value

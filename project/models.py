@@ -150,6 +150,11 @@ class Requirement(models.Model):
         verbose_name='评分已公示',
         help_text='标记该需求下的项目评分是否已公示'
     )
+    review_comment = models.TextField(
+        '审核意见', 
+        blank=True, 
+        help_text='管理员审核时的意见，审核通过时可填写"通过"，审核失败时需注明具体原因'
+    )
     views = models.IntegerField(default=0, verbose_name='浏览数')
     resources = models.ManyToManyField('Resource', blank=True, verbose_name='关联资源')
     files = models.ManyToManyField(File, blank=True, verbose_name='文件信息')
@@ -199,8 +204,7 @@ class RequirementFavorite(models.Model):
         unique_together = ['student', 'requirement']  # 确保同一学生不能重复收藏同一需求
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['student'], name='req_fav_student_idx'),
-            models.Index(fields=['requirement'], name='req_fav_req_idx'),
+            # 保留有效的复合索引，移除被覆盖的单字段索引
             models.Index(fields=['student', 'created_at'], name='req_fav_student_created_idx'),
         ]
 
@@ -247,20 +251,12 @@ class Resource(models.Model):
         verbose_name_plural = '03-资源'
         ordering = ['-created_at']
         indexes = [
-            # 单字段索引
-            models.Index(fields=['status'], name='res_status_idx'),
-            models.Index(fields=['type'], name='res_type_idx'),
-            models.Index(fields=['create_person'], name='res_creator_idx'),
-            models.Index(fields=['created_at'], name='res_created_idx'),
-            models.Index(fields=['title'], name='res_title_idx'),
-            models.Index(fields=['downloads'], name='res_downloads_idx'),
-            models.Index(fields=['views'], name='res_views_idx'),
-
-            # 复合索引
+            # 保留核心复合索引，移除被覆盖的单字段索引
             models.Index(fields=['status', 'created_at'], name='res_status_created_idx'),
             models.Index(fields=['create_person', 'status'], name='res_creator_status_idx'),
             models.Index(fields=['create_person', 'created_at'], name='res_creator_created_idx'),
-
+            models.Index(fields=['type', 'status'], name='res_type_status_idx'),
+            
             # 排序优化索引
             models.Index(fields=['-downloads'], name='res_downloads_desc_idx'),
             models.Index(fields=['-views'], name='res_views_desc_idx'),

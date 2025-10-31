@@ -38,6 +38,7 @@ from project.models import Requirement
 from organization.models import Organization
 from studentproject.models import StudentProject
 from common_utils import APIResponse, format_validation_errors, paginate_queryset
+from notification.services import student_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -1099,7 +1100,7 @@ class IsProjectEvaluationPermission(permissions.BasePermission):
                 return True
             
             # 检查是否为需求创建者
-            if requirement.creator == request.user:
+            if requirement.publish_people.user == request.user:
                 return True
             
             # 检查是否为评分创建者（仅对ProjectEvaluation对象）
@@ -1534,6 +1535,29 @@ def get_project_ranking(request, requirement_id):
                 many=True,
                 context={'request': request}
             )
+            
+            # 发送项目评分公示通知给所有项目成员
+            for item in project_scores:
+                project = item['project']
+                rank = item['rank']
+                final_score = item['weighted_total_score']
+                
+                try:
+                    # 获取项目所有成员
+                    from studentproject.models import ProjectParticipant
+                    project_members = User.objects.filter(
+                        student_profile__project_participations__project=project,
+                        student_profile__project_participations__status='approved'
+                    ).distinct()
+                    
+                    student_notification_service.send_project_score_published_notification(
+                        members=list(project_members),
+                        project=project,
+                        total_score=final_score,
+                        weighted_score=final_score
+                    )
+                except Exception as e:
+                    logger.error(f'发送项目评分公示通知失败 - 项目ID: {project.id}, 错误: {str(e)}')
             
             return APIResponse.success(
                 data={

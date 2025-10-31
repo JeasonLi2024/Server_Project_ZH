@@ -131,3 +131,104 @@ class AccountDeletionLog(models.Model):
     
     def __str__(self):
         return f"{self.username} - {self.get_deletion_type_display()} - {self.get_status_display()}"
+
+
+class OrganizationInvitationCode(models.Model):
+    """企业邀请码模型"""
+    
+    STATUS_CHOICES = [
+        ('active', '有效'),
+        ('expired', '已过期'),
+        ('disabled', '已禁用'),
+    ]
+    
+    # 关联组织
+    organization = models.ForeignKey(
+        'organization.Organization', 
+        on_delete=models.CASCADE, 
+        related_name='invitation_codes',
+        verbose_name='所属组织'
+    )
+    
+    # 邀请码信息
+    code = models.CharField('邀请码', max_length=32, unique=True)
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='active')
+    
+    # 创建者信息
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_invitation_codes',
+        verbose_name='创建者'
+    )
+    
+    # 时间信息
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    expires_at = models.DateTimeField('过期时间')
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    
+    # 使用统计
+    used_count = models.PositiveIntegerField('使用次数', default=0)
+    max_uses = models.PositiveIntegerField('最大使用次数', default=100, help_text='0表示无限制')
+    
+    # 通知状态字段（防重复通知）
+    expiry_notification_sent = models.BooleanField('即将过期通知已发送', default=False)
+    expired_notification_sent = models.BooleanField('已过期通知已发送', default=False)
+    last_used_notification_at = models.DateTimeField('最后使用通知时间', null=True, blank=True)
+    
+    class Meta:
+        db_table = 'organization_invitation_code'
+        verbose_name = '03-企业邀请码'
+        verbose_name_plural = '03-企业邀请码'
+        indexes = [
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['code']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['created_at']),
+        ]
+        # 确保每个组织同时只有一个有效的邀请码
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization'],
+                condition=models.Q(status='active'),
+                name='unique_active_invitation_per_org'
+            )
+        ]
+    
+    def __str__(self):
+        return f"{self.organization.name} - {self.code} ({self.get_status_display()})"
+    
+    def is_expired(self):
+        """检查邀请码是否过期"""
+        return timezone.now() > self.expires_at
+    
+    def is_valid(self):
+        """检查邀请码是否有效（未过期且状态为active）"""
+        return self.status == 'active' and not self.is_expired()
+    
+    def can_be_used(self):
+        """检查邀请码是否可以使用（有效且未达到使用上限）"""
+        if not self.is_valid():
+            return False
+        if self.max_uses == 0:  # 无限制
+            return True
+        return self.used_count < self.max_uses
+    
+    def use_code(self):
+        """使用邀请码（增加使用次数）"""
+        if self.can_be_used():
+            self.used_count += 1
+            self.last_used_notification_at = timezone.now()
+            self.save(update_fields=['used_count', 'last_used_notification_at', 'updated_at'])
+            return True
+        return False
+    
+    def expire_code(self):
+        """手动过期邀请码"""
+        self.status = 'expired'
+        self.save(update_fields=['status', 'updated_at'])
+    
+    def disable_code(self):
+        """禁用邀请码"""
+        self.status = 'disabled'
+        self.save(update_fields=['status', 'updated_at'])

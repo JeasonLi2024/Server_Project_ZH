@@ -97,9 +97,20 @@ class Tag2Serializer(serializers.ModelSerializer):
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     """学生资料序列化器"""
+    school = serializers.SerializerMethodField()
+    
     class Meta:
         model = Student
-        fields = ['student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation']
+        fields = ['id', 'student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation']
+    
+    def get_school(self, obj):
+        """序列化学校信息"""
+        if obj.school:
+            return {
+                'id': obj.school.id,
+                'name': obj.school.school
+            }
+        return None
 
 
 class StudentProfileUpdateSerializer(serializers.ModelSerializer):
@@ -117,7 +128,15 @@ class StudentProfileUpdateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Student
-        fields = ['student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation', 'interest_tags', 'ability_tags']
+        fields = ['id', 'student_id', 'school_id', 'major', 'grade', 'education_level', 'expected_graduation', 'interest_tags', 'ability_tags']
+    
+    def validate_school_id(self, value):
+        """验证学校ID"""
+        if value:
+            from organization.models import University
+            if not University.objects.filter(id=value).exists():
+                raise serializers.ValidationError("无效的学校ID")
+        return value
     
     def validate_interest_tags(self, value):
         """验证兴趣标签ID"""
@@ -188,8 +207,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if obj.user_type == 'student' and hasattr(obj, 'student_profile'):
             student = obj.student_profile
             return {
+                'id': student.id,  # 添加student表中的主键id
                 'student_id': student.student_id,
-                'school': student.school,
+                'school': {'id': student.school.id, 'name': student.school.school} if student.school else None,
                 'major': student.major,
                 'grade': student.grade,
                 'education_level': student.education_level,
@@ -263,6 +283,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 }
             
             return {
+                'id': organization_user.id,  # 添加organization_user表中的主键id
+                'organization': organization_data,
                 'position': organization_user.position,
                 'department': organization_user.department,
                 'permission': organization_user.permission,
@@ -270,17 +292,16 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 'status': organization_user.status,
                 'status_display': organization_user.get_status_display(),
                 'created_at': organization_user.created_at,
-                'updated_at': organization_user.updated_at,
-                'organization': organization_data
+                'updated_at': organization_user.updated_at
             }
         return None
 
 
 class OrganizationUserUpdateSerializer(serializers.ModelSerializer):
-    """组织用户资料更新序列化器"""
+    """组织用户更新序列化器"""
     class Meta:
         model = OrganizationUser
-        fields = ['position', 'department']
+        fields = ['id', 'position', 'department']
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):

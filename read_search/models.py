@@ -19,7 +19,6 @@ class TagMatch(models.Model):
         verbose_name='学生ID',
         help_text='关联的学生用户ID',
         db_column='Sid',  # 数据库列名
-        db_index=True  # 添加索引以优化查询性能
     )
     
     # 项目需求ID - 普通整数字段
@@ -27,7 +26,6 @@ class TagMatch(models.Model):
         verbose_name='项目需求ID',
         help_text='关联的项目需求ID',
         db_column='Pid',  # 数据库列名
-        db_index=True  # 添加索引以优化查询性能
     )
     
     # 标签来源 - 优化为选择字段
@@ -54,18 +52,12 @@ class TagMatch(models.Model):
         verbose_name = '标签匹配'
         verbose_name_plural = '标签匹配'
         
-        # 索引优化 - 基于查询模式
+        # 索引优化 - 基于查询模式的复合索引
         indexes = [
-            # 单字段索引
-            models.Index(fields=['student_id'], name='tag_match_student_idx'),
-            models.Index(fields=['requirement_id'], name='tag_match_requirement_idx'),
-            models.Index(fields=['tag_source'], name='tag_match_source_idx'),
-            models.Index(fields=['tag_id'], name='tag_match_tag_id_idx'),
-            
             # 复合索引 - 优化常用查询
             models.Index(fields=['student_id', 'tag_source'], name='tag_match_stu_source_idx'),
             models.Index(fields=['requirement_id', 'tag_source'], name='tag_match_req_source_idx'),
-            models.Index(fields=['student_id', 'requirement_id'], name='tag_match_stu_req_idx'),
+            # 移除 tag_match_stu_req_idx，已被唯一约束覆盖
             models.Index(fields=['tag_source', 'tag_id'], name='tag_match_source_tag_idx'),
         ]
         

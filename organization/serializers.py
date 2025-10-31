@@ -1,8 +1,15 @@
+import logging
 from rest_framework import serializers
 from django.conf import settings
+from django.db import transaction
 from common_utils import build_media_url, build_media_urls_list
 from .models import Organization, OrganizationOperationLog, OrganizationConfig
 from user.models import OrganizationUser
+from django.contrib.auth import get_user_model
+from .utils import log_organization_operation
+from audit.utils import AuditLogMixin, log_organization_audit
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -90,6 +97,7 @@ class OrganizationMemberUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """更新组织成员信息并记录日志"""
         from .utils import log_organization_operation
+        from notification.services import org_notification_service
         
         request = self.context.get('request')
         old_data = {
@@ -104,27 +112,13 @@ class OrganizationMemberUpdateSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
         
-        # 记录操作日志（只记录权限和状态变更）
+        # 记录操作日志和发送通知
         if request and request.user:
-            # 检测状态变更
-            if 'status' in validated_data and old_data['status'] != validated_data['status']:
-                from .views import _get_operation_by_status_change
-                operation = _get_operation_by_status_change(old_data['status'], validated_data['status'])
-                
-                log_organization_operation(
-                    user=request.user,
-                    organization=instance.organization,
-                    operation=operation,
-                    target_user=instance.user,
-                    details={
-                        'old_status': old_data['status'],
-                        'new_status': validated_data['status'],
-                        'single_member_update': True
-                    }
-                )
+            permission_changed = 'permission' in validated_data and old_data['permission'] != validated_data['permission']
+            status_changed = 'status' in validated_data and old_data['status'] != validated_data['status']
             
-            # 检测权限变更
-            if 'permission' in validated_data and old_data['permission'] != validated_data['permission']:
+            # 情况1：只修改权限
+            if permission_changed and not status_changed:
                 from .views import _get_operation_by_permission_change
                 operation = _get_operation_by_permission_change(old_data['permission'], validated_data['permission'])
                 
@@ -139,6 +133,117 @@ class OrganizationMemberUpdateSerializer(serializers.ModelSerializer):
                         'single_member_update': True
                     }
                 )
+                
+                # 发送权限变更通知
+                try:
+                    org_notification_service.send_organization_permission_change_notification(
+                        target_user=instance.user,
+                        operator=request.user,
+                        organization_name=instance.organization.name,
+                        old_permission=old_data['permission'],
+                        new_permission=validated_data['permission']
+                    )
+                except Exception as e:
+                    logger.error(f"发送权限变更通知失败: {str(e)}")
+            
+            # 情况2：只修改状态
+            elif status_changed and not permission_changed:
+                from .views import _get_operation_by_status_change
+                operation = _get_operation_by_status_change(old_data['status'], validated_data['status'])
+                
+                log_organization_operation(
+                    user=request.user,
+                    organization=instance.organization,
+                    operation=operation,
+                    target_user=instance.user,
+                    details={
+                        'old_status': old_data['status'],
+                        'new_status': validated_data['status'],
+                        'single_member_update': True
+                    }
+                )
+                
+                # 发送状态变更通知
+                try:
+                    # 特殊处理：注册审核拒绝（permission保持pending，只修改status从pending到rejected）
+                    if (old_data['status'] == 'pending' and validated_data['status'] == 'rejected' and 
+                        old_data['permission'] == 'pending'):
+                        org_notification_service.send_user_registration_review_result(
+                            user=instance.user,
+                            organization=instance.organization,
+                            approved=False,
+                            reviewer=request.user
+                        )
+                    else:
+                        # 一般状态变更通知
+                        org_notification_service.send_organization_status_change_notification(
+                            target_user=instance.user,
+                            operator=request.user,
+                            organization_name=instance.organization.name,
+                            old_status=old_data['status'],
+                            new_status=validated_data['status']
+                        )
+                except Exception as e:
+                    logger.error(f"发送状态变更通知失败: {str(e)}")
+            
+            # 情况3：同时修改权限和状态
+            elif permission_changed and status_changed:
+                # 记录权限变更日志
+                from .views import _get_operation_by_permission_change
+                permission_operation = _get_operation_by_permission_change(old_data['permission'], validated_data['permission'])
+                
+                log_organization_operation(
+                    user=request.user,
+                    organization=instance.organization,
+                    operation=permission_operation,
+                    target_user=instance.user,
+                    details={
+                        'old_permission': old_data['permission'],
+                        'new_permission': validated_data['permission'],
+                        'single_member_update': True
+                    }
+                )
+                
+                # 记录状态变更日志
+                from .views import _get_operation_by_status_change
+                status_operation = _get_operation_by_status_change(old_data['status'], validated_data['status'])
+                
+                log_organization_operation(
+                    user=request.user,
+                    organization=instance.organization,
+                    operation=status_operation,
+                    target_user=instance.user,
+                    details={
+                        'old_status': old_data['status'],
+                        'new_status': validated_data['status'],
+                        'single_member_update': True
+                    }
+                )
+                
+                # 发送通知
+                try:
+                    # 特殊处理：注册审核通过（permission从pending改为member且status从pending改为approved）
+                    if (old_data['permission'] == 'pending' and validated_data['permission'] == 'member' and
+                        old_data['status'] == 'pending' and validated_data['status'] == 'approved'):
+                        org_notification_service.send_user_registration_review_result(
+                            user=instance.user,
+                            organization=instance.organization,
+                            approved=True,
+                            reviewer=request.user
+                        )
+                    else:
+                        # 一般权限和状态同时变更通知
+                        org_notification_service.send_organization_permission_and_status_change_notification(
+                            target_user=instance.user,
+                            operator=request.user,
+                            organization_name=instance.organization.name,
+                            old_permission=old_data['permission'],
+                            new_permission=validated_data['permission'],
+                            old_status=old_data['status'],
+                            new_status=validated_data['status']
+                        )
+                except Exception as e:
+                    logger.error(f"发送权限和状态变更通知失败: {str(e)}")
         
         return instance
 
@@ -220,7 +325,7 @@ class OrganizationMemberListSerializer(serializers.ModelSerializer):
         return None
 
 
-class OrganizationUpdateSerializer(serializers.ModelSerializer):
+class OrganizationUpdateSerializer(AuditLogMixin, serializers.ModelSerializer):
     """组织信息更新序列化器"""
     
     class Meta:
@@ -251,6 +356,27 @@ class OrganizationUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('更新组织信息时不允许修改认证图片，请使用专门的认证图片上传接口')
         
         return data
+    
+    def update(self, instance, validated_data):
+        """更新组织信息并记录审核历史"""
+        # 记录原始状态
+        original_status = instance.status
+        
+        # 更新实例
+        updated_instance = super().update(instance, validated_data)
+        
+        # 如果状态发生变更，记录审核历史
+        if original_status != updated_instance.status:
+            log_organization_audit(
+                organization=updated_instance,
+                action='status_change',
+                old_status=original_status,
+                new_status=updated_instance.status,
+                comment='组织信息更新导致状态变更',
+                request=self.context.get('request')
+            )
+        
+        return updated_instance
 
 
 class OrganizationLogoUploadSerializer(serializers.ModelSerializer):
@@ -408,31 +534,53 @@ class OrganizationVerificationMaterialsSerializer(serializers.ModelSerializer):
     
     def save(self, **kwargs):
         """保存认证材料和图片"""
+        from django.db import transaction
+        
         instance = self.instance
-        image_urls = []
+        original_status = instance.status
         
-        # 处理上传的图片文件
-        for i in range(1, 6):
-            field_name = f'verification_image_{i}'
-            image_file = self.validated_data.pop(field_name, None)
+        # 使用数据库事务确保操作原子性
+        with transaction.atomic():
+            image_urls = []
             
-            if image_file:
-                # 保存图片文件并获取URL
-                image_url = self._save_image_file(image_file, f'verification_{instance.id}_{i}')
-                if image_url:
-                    image_urls.append(image_url)
-        
-        # 更新组织信息
-        for field, value in self.validated_data.items():
-            if hasattr(instance, field):
-                setattr(instance, field, value)
-        
-        # 更新认证图片
-        instance.verification_image = image_urls
-        
-        # 更新状态
-        instance.status = 'under_review'
-        instance.save()
+            # 处理上传的图片文件
+            for i in range(1, 6):
+                field_name = f'verification_image_{i}'
+                image_file = self.validated_data.pop(field_name, None)
+                
+                if image_file:
+                    # 保存图片文件并获取URL
+                    image_url = self._save_image_file(image_file, f'verification_{instance.id}_{i}')
+                    if image_url:
+                        image_urls.append(image_url)
+            
+            # 更新组织信息
+            for field, value in self.validated_data.items():
+                if hasattr(instance, field):
+                    setattr(instance, field, value)
+            
+            # 更新认证图片
+            instance.verification_image = image_urls
+            
+            # 状态判断逻辑：当前状态为审核失败时重置为待审核
+            if instance.status == 'rejected':
+                instance.status = 'under_review'
+            elif instance.status not in ['under_review', 'verified']:
+                # 其他状态（如pending）也设置为under_review
+                instance.status = 'under_review'
+            
+            instance.save()
+            
+            # 记录审核历史
+            if original_status != instance.status:
+                log_organization_audit(
+                    organization=instance,
+                    action='status_change',
+                    old_status=original_status,
+                    new_status=instance.status,
+                    comment='重新提交认证材料，状态自动更新',
+                    request=self.context.get('request')
+                )
         
         return instance
     

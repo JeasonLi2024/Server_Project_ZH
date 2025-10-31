@@ -61,8 +61,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     # 基本信息
     id = models.AutoField(primary_key=True)
-    username = models.CharField('用户名', max_length=30, unique=True, default='user',
-                               validators=[RegexValidator(r'^[a-zA-Z0-9_]+$', '用户名只能包含字母、数字和下划线')])
+    username = models.CharField('用户名', max_length=30, unique=True, default='user')
     email = models.EmailField('邮箱', unique=True)
     phone = models.CharField('手机号', max_length=11, blank=True, null=True,
                             validators=[RegexValidator(r'^1[3-9]\d{9}$', '请输入正确的手机号')])
@@ -143,7 +142,7 @@ class Student(models.Model):
     
     # 学籍信息
     student_id = models.CharField('学号', max_length=20, unique=True)
-    school = models.CharField('学校', max_length=100)
+    school = models.ForeignKey('organization.University', on_delete=models.CASCADE, verbose_name='学校')
     major = models.CharField('专业', max_length=100)
     grade = models.CharField('年级', max_length=10, choices=GRADE_CHOICES)
     education_level = models.CharField('学历层次', max_length=20, choices=EDUCATION_LEVEL_CHOICES, default='undergraduate')
@@ -161,11 +160,11 @@ class Student(models.Model):
         verbose_name = '02-学生用户'
         verbose_name_plural = '02-学生用户'
         indexes = [
-            models.Index(fields=['student_id']),
-            models.Index(fields=['school']),
-            models.Index(fields=['major']),
-            models.Index(fields=['grade']),
-            models.Index(fields=['status']),
+            # 优化复合索引，基于常见查询模式
+            models.Index(fields=['school', 'status'], name='student_school_status_idx'),
+            models.Index(fields=['school', 'grade'], name='student_school_grade_idx'),
+            models.Index(fields=['major', 'grade'], name='student_major_grade_idx'),
+            models.Index(fields=['student_id']),  # 保留唯一字段索引
         ]
     
     def __str__(self):
@@ -253,6 +252,17 @@ class OrganizationUser(models.Model):
     permission = models.CharField('权限', max_length=10, choices=PERMISSION_CHOICES, default='pending')
     status = models.CharField('认证状态', max_length=20, choices=STATUS_CHOICES, default='pending')
     
+    # CAS认证相关字段（精简版）
+    employee_id = models.CharField('工号', max_length=50, blank=True, null=True,
+                                  help_text='教师工号，用于CAS统一认证')
+    cas_user_id = models.CharField('CAS用户ID', max_length=100, blank=True, null=True, 
+                                  help_text='CAS系统返回的用户唯一标识')
+    auth_source = models.CharField('认证来源', max_length=20, default='manual',
+                                  choices=[('manual', '手动注册'), ('cas', 'CAS认证')],
+                                  help_text='用户认证来源')
+    last_cas_login = models.DateTimeField('最后CAS登录时间', blank=True, null=True)
+
+    
     # 时间戳字段
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -262,10 +272,7 @@ class OrganizationUser(models.Model):
         verbose_name = '03-组织用户'
         verbose_name_plural = '03-组织用户'
         indexes = [
-            models.Index(fields=['permission'], name='org_user_perm_idx'),
-            models.Index(fields=['status'], name='org_user_status_idx'),
-            models.Index(fields=['organization'], name='org_user_org_idx'),
-            # 新增复合索引
+            # 保留有效的复合索引，移除被覆盖的单字段索引
             models.Index(fields=['organization', 'permission'], name='org_user_org_perm_idx'),
             models.Index(fields=['organization', 'status'], name='org_user_org_status_idx'),
         ]
@@ -320,6 +327,7 @@ class Tag1(models.Model):
     """兴趣标签表"""
     
     value = models.CharField('标签内容', max_length=100, unique=True, help_text='如：大模型、人工智能等')
+    frequency = models.CharField('频率', max_length=255, blank=True, null=True)
     
     class Meta:
         db_table = 'tag_1'
@@ -341,11 +349,13 @@ class Tag2(models.Model):
     category = models.CharField('行业分类', max_length=100, help_text='第一级分类，如：互联网、设计')
     subcategory = models.CharField('技术分类', max_length=100, help_text='第二级分类，如：java、UI设计')
     specialty = models.CharField('专业方向', max_length=100, blank=True, null=True, help_text='第三级分类，如：前端、后端')
+    frequency = models.CharField('频率', max_length=255, blank=True, null=True)
     
     # 层次结构字段
     parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, 
                               related_name='children', verbose_name='父级标签',
-                              help_text='指向父级标签，用于构建层次结构')
+                              help_text='指向父级标签，用于构建层次结构',
+                              db_index=False)  # 移除单字段索引，已被复合索引覆盖
     level = models.PositiveSmallIntegerField('层级', default=1, 
                                            help_text='标签层级：1=行业-技术，2=行业-技术-岗位')
     
@@ -356,14 +366,10 @@ class Tag2(models.Model):
         verbose_name = '05-能力标签'
         verbose_name_plural = '05-能力标签'
         indexes = [
-            models.Index(fields=['category'], name='tag2_category_idx'),
-            models.Index(fields=['subcategory'], name='tag2_subcategory_idx'),
-            models.Index(fields=['specialty'], name='tag2_specialty_idx'),
-            models.Index(fields=['parent'], name='tag2_parent_idx'),
-            models.Index(fields=['level'], name='tag2_level_idx'),
-            # 复合索引用于层级查询
-            models.Index(fields=['category', 'subcategory'], name='tag2_cat_subcat_idx'),
+            # 优化复合索引设计，基于查询模式
             models.Index(fields=['category', 'subcategory', 'specialty'], name='tag2_full_path_idx'),
+            models.Index(fields=['level', 'category'], name='tag2_level_category_idx'),
+            models.Index(fields=['parent', 'level'], name='tag2_parent_level_idx'),
         ]
         unique_together = [
             ('category', 'subcategory', 'specialty'),
@@ -417,9 +423,13 @@ class Tag1StuMatch(models.Model):
         unique_together = ['student', 'tag1']
         verbose_name = '07-学生兴趣标签关联'
         verbose_name_plural = '07-学生兴趣标签关联'
+        indexes = [
+            # 保留复合索引，移除冗余的单字段索引
+            models.Index(fields=['tag1', 'student'], name='tag1_stu_tag1_student_idx'),
+        ]
     
     def __str__(self):
-        return f"{self.student.user.username} - {self.tag1.value}"
+        return f"学生ID:{self.student.id} - {self.tag1.value}"
 
 
 class Tag2StuMatch(models.Model):
@@ -434,6 +444,10 @@ class Tag2StuMatch(models.Model):
         unique_together = ['student', 'tag2']
         verbose_name = '08-学生能力标签关联'
         verbose_name_plural = '08-学生能力标签关联'
+        indexes = [
+            # 保留复合索引，移除冗余的单字段索引
+            models.Index(fields=['tag2', 'student'], name='tag2_stu_tag2_student_idx'),
+        ]
     
     def __str__(self):
-        return f"{self.student.user.username} - {self.tag2}"
+        return f"学生ID:{self.student.id} - {self.tag2}"

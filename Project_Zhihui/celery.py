@@ -32,11 +32,104 @@ app.conf.beat_schedule = {
         'task': 'authentication.tasks.cleanup_old_deletion_logs',
         'schedule': crontab(hour=2, minute=0, day_of_week=0),  # 每周日凌晨2点执行
     },
-    # 每天凌晨3点清理过期验证码
-    'clean-expired-verification-codes': {
-        'task': 'user.tasks.clean_expired_verification_codes',
+    # 每天凌晨4点自动更新过期需求状态
+    'auto-complete-expired-requirements': {
+        'task': 'notification.tasks.auto_complete_expired_requirements',
+        'schedule': crontab(hour=4, minute=0),  # 每日凌晨4点执行
+    },
+    # 每天上午10点发送需求截止提醒
+    'send-requirement-deadline-reminders': {
+        'task': 'notification.tasks.send_requirement_deadline_reminders',
+        'schedule': crontab(hour=10, minute=0),  # 每日上午10点执行
+    },
+    # 每天上午9点发送邀请过期提醒
+    'send-invitation-expiry-reminders': {
+        'task': 'notification.tasks.send_invitation_expiry_reminders',
+        'schedule': crontab(hour=9, minute=0),  # 每日上午9点执行
+    },
+    # 每天凌晨1点清理过期通知
+    'cleanup-old-notifications': {
+        'task': 'notification.tasks.cleanup_old_notifications',
+        'schedule': crontab(hour=1, minute=0),  # 每日凌晨1点执行
+    },
+    # 每天凌晨2点清理旧的通知日志
+    'cleanup-old-notification-logs': {
+        'task': 'notification.tasks.cleanup_old_notification_logs',
+        'schedule': crontab(hour=2, minute=30),  # 每日凌晨2点30分执行
+    },
+    
+    # Dashboard统计数据定时任务
+    # 每日6点更新所有Dashboard统计数据
+    'update-dashboard-stats-daily': {
+        'task': 'dashboard.tasks.update_all_dashboard_stats',
+        'schedule': crontab(hour=6, minute=0),  # 每天早上6点执行
+        'options': {
+            'expires': 3600,  # 任务1小时后过期
+        }
+    },
+    # 每4小时更新一次Tag1学生标签统计（热点数据）
+    'update-tag1-student-stats-frequent': {
+        'task': 'dashboard.tasks.update_tag1_student_stats',
+        'schedule': crontab(minute=0, hour='*/4'),  # 每4小时执行一次
+        'options': {
+            'expires': 1800,  # 任务30分钟后过期
+        }
+    },
+    # 每4小时更新一次Tag2学生标签统计（热点数据）
+    'update-tag2-student-stats-frequent': {
+        'task': 'dashboard.tasks.update_tag2_student_stats',
+        'schedule': crontab(minute=0, hour='*/4'),  # 每4小时执行一次
+        'options': {
+            'expires': 1800,  # 任务30分钟后过期
+        }
+    },
+    # 每2小时更新一次项目状态统计（变化较频繁）
+    'update-project-status-stats-frequent': {
+        'task': 'dashboard.tasks.update_project_status_stats',
+        'schedule': crontab(minute=0, hour='*/2'),  # 每2小时执行一次
+        'options': {
+            'expires': 1800,  # 任务30分钟后过期
+        }
+    },
+    # 每日6点30分更新组织状态统计
+    'update-organization-status-stats-daily': {
+        'task': 'dashboard.tasks.update_organization_status_stats',
+        'schedule': crontab(hour=6, minute=30),  # 每天早上6点30分执行
+        'options': {
+            'expires': 3600,  # 任务1小时后过期
+        }
+    },
+    # 每日7点更新项目Tag1标签统计
+    'update-project-tag1-stats-daily': {
+        'task': 'dashboard.tasks.update_project_tag1_stats',
+        'schedule': crontab(hour=7, minute=0),  # 每天早上7点执行
+        'options': {
+            'expires': 3600,  # 任务1小时后过期
+        }
+    },
+    
+    # 邀请码相关定时任务
+    # 每天凌晨3点清理过期的邀请码
+    'cleanup-expired-invitation-codes': {
+        'task': 'authentication.tasks.cleanup_expired_invitation_codes_task',
         'schedule': crontab(hour=3, minute=0),  # 每日凌晨3点执行
     },
+    # 每周日凌晨4点清理老旧的邀请码数据
+    'cleanup-old-invitation-codes': {
+        'task': 'authentication.tasks.cleanup_old_invitation_codes_task',
+        'schedule': crontab(hour=4, minute=0, day_of_week=0),  # 每周日凌晨4点执行
+    },
+    # 每天上午8点发送邀请码即将过期通知
+    'send-invitation-code-expiry-notifications': {
+        'task': 'authentication.tasks.send_invitation_code_expiry_notification',
+        'schedule': crontab(hour=8, minute=0),  # 每日上午8点执行
+    },
+    # 每天上午8点30分发送邀请码已过期通知
+    'send-invitation-code-expired-notifications': {
+        'task': 'authentication.tasks.send_invitation_code_expired_notification',
+        'schedule': crontab(hour=8, minute=30),  # 每日上午8点30分执行
+    },
+
 }
 
 app.conf.timezone = settings.TIME_ZONE

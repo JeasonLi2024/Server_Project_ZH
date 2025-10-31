@@ -28,9 +28,12 @@ class StudentProject(models.Model):
     # 关联需求
     requirement = models.ForeignKey(
         'project.Requirement',
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='student_projects',
-        verbose_name='关联需求'
+        verbose_name='关联需求',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 项目状态
@@ -75,9 +78,9 @@ class StudentProject(models.Model):
         ordering = ['-created_at']
         
         indexes = [
-            models.Index(fields=['requirement']),
-            models.Index(fields=['status']),
-            models.Index(fields=['is_evaluated']),
+            # 优化复合索引，基于查询模式
+            models.Index(fields=['requirement', 'status'], name='sp_req_status_idx'),
+            models.Index(fields=['status', 'is_evaluated'], name='sp_status_eval_idx'),
             models.Index(fields=['created_at']),
         ]
     
@@ -125,14 +128,16 @@ class ProjectParticipant(models.Model):
         StudentProject,
         on_delete=models.CASCADE,
         related_name='project_participants',
-        verbose_name='项目'
+        verbose_name='项目',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     student = models.ForeignKey(
         'user.Student',
         on_delete=models.CASCADE,
         related_name='project_participations',
-        verbose_name='学生'
+        verbose_name='学生',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 角色和状态
@@ -190,9 +195,9 @@ class ProjectParticipant(models.Model):
         ordering = ['-applied_at']
         
         indexes = [
-            models.Index(fields=['project', 'role']),
-            models.Index(fields=['student']),
-            models.Index(fields=['status']),
+            # 优化复合索引设计
+            models.Index(fields=['project', 'role', 'status'], name='pp_proj_role_status_idx'),
+            models.Index(fields=['student', 'status'], name='pp_student_status_idx'),
         ]
     
     def __str__(self):
@@ -213,7 +218,8 @@ class ProjectDeliverable(models.Model):
         StudentProject,
         on_delete=models.CASCADE,
         related_name='deliverables',
-        verbose_name='关联项目'
+        verbose_name='关联项目',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     title = models.CharField(
@@ -271,7 +277,8 @@ class ProjectDeliverable(models.Model):
         'user.Student',
         on_delete=models.CASCADE,
         related_name='submitted_deliverables',
-        verbose_name='提交人'
+        verbose_name='提交人',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 最新修改人信息
@@ -326,10 +333,9 @@ class ProjectDeliverable(models.Model):
         unique_together = ['project', 'stage_type', 'version_number']
         
         indexes = [
-            models.Index(fields=['project', 'stage_type']),
-            models.Index(fields=['submitter']),
-            models.Index(fields=['created_at']),
-            models.Index(fields=['is_milestone']),
+            # 优化复合索引，减少单字段索引
+            models.Index(fields=['project', 'stage_type', 'is_milestone'], name='pd_proj_stage_milestone_idx'),
+            models.Index(fields=['submitter', 'created_at'], name='pd_submitter_created_idx'),
         ]
     
     def save(self, *args, **kwargs):
@@ -383,7 +389,8 @@ class ProjectComment(models.Model):
         StudentProject,
         on_delete=models.CASCADE,
         related_name='comments',
-        verbose_name='关联项目'
+        verbose_name='关联项目',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 关联成果（可选）
@@ -406,7 +413,8 @@ class ProjectComment(models.Model):
         'user.User',
         on_delete=models.CASCADE,
         related_name='project_comments',
-        verbose_name='评论作者'
+        verbose_name='评论作者',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 父评论（支持回复）
@@ -437,11 +445,10 @@ class ProjectComment(models.Model):
         ordering = ['-created_at']
         
         indexes = [
-            models.Index(fields=['project']),
-            models.Index(fields=['deliverable']),
-            models.Index(fields=['author']),
-            models.Index(fields=['parent_comment']),
-            models.Index(fields=['created_at']),
+            # 优化复合索引设计
+            models.Index(fields=['project', 'deliverable'], name='pc_proj_deliverable_idx'),
+            models.Index(fields=['author', 'created_at'], name='pc_author_created_idx'),
+            models.Index(fields=['parent_comment'], name='pc_parent_idx'),
         ]
     
     def get_reply_count(self):
@@ -473,7 +480,8 @@ class ProjectInvitation(models.Model):
         StudentProject,
         on_delete=models.CASCADE,
         related_name='invitations',
-        verbose_name='项目'
+        verbose_name='项目',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 邀请者（项目负责人）
@@ -481,7 +489,8 @@ class ProjectInvitation(models.Model):
         'user.Student',
         on_delete=models.CASCADE,
         related_name='sent_invitations',
-        verbose_name='邀请者'
+        verbose_name='邀请者',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 被邀请者
@@ -489,7 +498,8 @@ class ProjectInvitation(models.Model):
         'user.Student',
         on_delete=models.CASCADE,
         related_name='received_invitations',
-        verbose_name='被邀请者'
+        verbose_name='被邀请者',
+        db_index=False  # 移除单字段索引，已被复合索引覆盖
     )
     
     # 邀请状态
@@ -539,11 +549,10 @@ class ProjectInvitation(models.Model):
         ordering = ['-created_at']
         
         indexes = [
-            models.Index(fields=['project']),
-            models.Index(fields=['inviter']),
-            models.Index(fields=['invitee']),
-            models.Index(fields=['status']),
-            models.Index(fields=['created_at']),
+            # 优化复合索引设计
+            models.Index(fields=['project', 'status'], name='pi_proj_status_idx'),
+            models.Index(fields=['invitee', 'status'], name='pi_invitee_status_idx'),
+            models.Index(fields=['inviter', 'created_at'], name='pi_inviter_created_idx'),
         ]
     
     def save(self, *args, **kwargs):

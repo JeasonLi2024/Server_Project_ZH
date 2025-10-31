@@ -3,9 +3,10 @@ from django.utils import timezone
 from django.db import transaction
 from django.core.mail import send_mail
 from django.conf import settings
-from .models import AccountDeletionLog
+from .models import AccountDeletionLog, OrganizationInvitationCode
 from user.models import User, Student, OrganizationUser
 from organization.models import Organization
+# from .invitation_utils import cleanup_expired_invitation_codes  # 函数不存在，注释掉
 import logging
 import os
 import json
@@ -23,7 +24,7 @@ def process_scheduled_account_deletions():
         pending_deletions = AccountDeletionLog.objects.filter(
             status__in=['pending', 'approved'],
             scheduled_deletion_at__lte=current_time
-        ).select_related('user')
+        )
         
         processed_count = 0
         failed_count = 0
@@ -321,3 +322,317 @@ def send_deletion_reminder_email(user, deletion_log):
         recipient_list=[user.email],
         fail_silently=False,
     )
+
+
+@shared_task(bind=True)
+def cleanup_expired_invitation_codes_task(self):
+    """
+    定时清理过期的邀请码
+    将过期的邀请码状态更新为 'expired'
+    """
+    try:
+        with transaction.atomic():
+            # 获取所有过期但状态仍为active的邀请码
+            expired_codes = OrganizationInvitationCode.objects.filter(
+                status='active',
+                expires_at__lt=timezone.now()
+            )
+            
+            expired_count = expired_codes.count()
+            
+            if expired_count > 0:
+                # 批量更新状态为过期
+                expired_codes.update(
+                    status='expired',
+                    updated_at=timezone.now()
+                )
+                
+                logger.info(f"成功清理了 {expired_count} 个过期的邀请码")
+                
+                return {
+                    'status': 'success',
+                    'message': f'成功清理了 {expired_count} 个过期的邀请码',
+                    'expired_count': expired_count
+                }
+            else:
+                logger.info("没有发现过期的邀请码")
+                return {
+                    'status': 'success',
+                    'message': '没有发现过期的邀请码',
+                    'expired_count': 0
+                }
+                
+    except Exception as e:
+        logger.error(f"清理过期邀请码时发生错误: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f'清理过期邀请码时发生错误: {str(e)}'
+        }
+
+
+@shared_task(bind=True)
+def cleanup_old_invitation_codes_task(self):
+    """
+    定时清理旧的邀请码记录
+    删除创建时间超过90天的已过期或已禁用的邀请码记录
+    """
+    try:
+        with transaction.atomic():
+            # 计算90天前的时间
+            cutoff_date = timezone.now() - timezone.timedelta(days=90)
+            
+            # 获取需要删除的旧邀请码记录
+            old_codes = OrganizationInvitationCode.objects.filter(
+                status__in=['expired', 'disabled'],
+                created_at__lt=cutoff_date
+            )
+            
+            old_count = old_codes.count()
+            
+            if old_count > 0:
+                # 删除旧记录
+                old_codes.delete()
+                
+                logger.info(f"成功清理了 {old_count} 个旧的邀请码记录")
+                
+                return {
+                    'status': 'success',
+                    'message': f'成功清理了 {old_count} 个旧的邀请码记录',
+                    'deleted_count': old_count
+                }
+            else:
+                logger.info("没有发现需要清理的旧邀请码记录")
+                return {
+                    'status': 'success',
+                    'message': '没有发现需要清理的旧邀请码记录',
+                    'deleted_count': 0
+                }
+                
+    except Exception as e:
+        logger.error(f"清理旧邀请码记录时发生错误: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f'清理旧邀请码记录时发生错误: {str(e)}'
+        }
+
+
+@shared_task(bind=True)
+def send_invitation_code_expiry_notification(self):
+    """
+    发送邀请码即将过期的通知
+    提醒管理员邀请码将在24小时内过期
+    """
+    try:
+        from notification.services import notification_service
+        from notification.models import NotificationLog
+        
+        # 计算24小时后的时间
+        tomorrow = timezone.now() + timezone.timedelta(hours=24)
+        
+        # 获取即将在24小时内过期的活跃邀请码，且未发送过期通知的
+        expiring_codes = OrganizationInvitationCode.objects.filter(
+            status='active',
+            expires_at__lte=tomorrow,
+            expires_at__gt=timezone.now(),
+            expiry_notification_sent=False  # 防重复通知
+        ).select_related('organization', 'created_by')
+        
+        notification_count = 0
+        
+        for code in expiring_codes:
+            try:
+                # 计算剩余小时数
+                time_diff = code.expires_at - timezone.now()
+                hours_left = max(0, int(time_diff.total_seconds() / 3600))
+                
+                # 准备模板变量
+                template_vars = {
+                    'invitation_code': code.code,
+                    'organization_name': code.organization.name,
+                    'expires_at': code.expires_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    'hours_left': hours_left,
+                    'organization_url': f'/organization/{code.organization.id}/'
+                }
+                
+                # 发送通知给邀请码创建者
+                notification = notification_service.create_and_send_notification(
+                    recipient=code.created_by,
+                    notification_type_code='org_invitation_code_expiring_soon',
+                    template_vars=template_vars,
+                    strategies=['websocket', 'email']  # 同时发送WebSocket和邮件通知
+                )
+                
+                if notification:
+                    # 标记已发送过期通知
+                    code.expiry_notification_sent = True
+                    code.save(update_fields=['expiry_notification_sent'])
+                    
+                    notification_count += 1
+                    logger.info(
+                        f"邀请码即将过期通知已发送: {code.code} -> {code.created_by.username}, "
+                        f"剩余 {hours_left} 小时"
+                    )
+                else:
+                    logger.warning(f"邀请码过期通知发送失败: {code.code}")
+                
+            except Exception as e:
+                logger.error(f"发送邀请码过期通知时发生错误: {str(e)}")
+                continue
+        
+        return {
+            'status': 'success',
+            'message': f'成功发送了 {notification_count} 个邀请码过期通知',
+            'notification_count': notification_count
+        }
+        
+    except Exception as e:
+        logger.error(f"发送邀请码过期通知时发生错误: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f'发送邀请码过期通知时发生错误: {str(e)}'
+        }
+
+
+@shared_task(bind=True)
+def send_invitation_code_expired_notification(self):
+    """
+    发送邀请码已过期的通知
+    通知创建者邀请码已过期
+    """
+    try:
+        from notification.services import notification_service
+        
+        # 获取已过期但未发送过期通知的邀请码
+        expired_codes = OrganizationInvitationCode.objects.filter(
+            expires_at__lt=timezone.now(),
+            expired_notification_sent=False  # 防重复通知
+        ).select_related('organization', 'created_by')
+        
+        notification_count = 0
+        
+        for code in expired_codes:
+            try:
+                # 准备模板变量
+                template_vars = {
+                    'invitation_code': code.code,
+                    'organization_name': code.organization.name,
+                    'expires_at': code.expires_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    'created_by_name': code.created_by.get_full_name() or code.created_by.username
+                }
+                
+                # 发送通知给邀请码创建者
+                notification = notification_service.create_and_send_notification(
+                    recipient=code.created_by,
+                    notification_type_code='org_invitation_code_expired',
+                    template_vars=template_vars,
+                    strategies=['websocket', 'email']  # 同时发送WebSocket和邮件通知
+                )
+                
+                if notification:
+                    # 标记已发送过期通知
+                    code.expired_notification_sent = True
+                    code.save(update_fields=['expired_notification_sent'])
+                    
+                    notification_count += 1
+                    logger.info(
+                        f"邀请码已过期通知已发送: {code.code} -> {code.created_by.username}"
+                    )
+                else:
+                    logger.warning(f"邀请码已过期通知发送失败: {code.code}")
+                
+            except Exception as e:
+                logger.error(f"发送邀请码已过期通知时发生错误: {str(e)}")
+                continue
+        
+        return {
+            'status': 'success',
+            'message': f'成功发送了 {notification_count} 个邀请码已过期通知',
+            'notification_count': notification_count
+        }
+        
+    except Exception as e:
+        logger.error(f"发送邀请码已过期通知时发生错误: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f'发送邀请码已过期通知时发生错误: {str(e)}'
+        }
+
+
+@shared_task(bind=True)
+def send_invitation_code_used_notification(self, invitation_code_id, user_id):
+    """
+    发送邀请码已使用的通知
+    当邀请码被使用时触发此任务
+    
+    Args:
+        invitation_code_id: 邀请码ID
+        user_id: 使用邀请码的用户ID
+    """
+    try:
+        from notification.services import notification_service
+        from django.contrib.auth import get_user_model
+        
+        User = get_user_model()
+        
+        # 获取邀请码和使用者信息
+        try:
+            invitation_code = OrganizationInvitationCode.objects.select_related(
+                'organization', 'created_by'
+            ).get(id=invitation_code_id)
+            user = User.objects.get(id=user_id)
+        except (OrganizationInvitationCode.DoesNotExist, User.DoesNotExist) as e:
+            logger.error(f"邀请码或用户不存在: {str(e)}")
+            return {
+                'status': 'error',
+                'message': f'邀请码或用户不存在: {str(e)}'
+            }
+        
+        # 每次邀请码被使用都应该发送通知，不设置防重复机制
+        now = timezone.now()
+        
+        # 计算剩余使用次数
+        remaining_uses = invitation_code.max_uses - invitation_code.used_count if invitation_code.max_uses else None
+        
+        # 准备模板变量
+        template_vars = {
+            'invitation_code_last_4': invitation_code.code[-4:],  # 只保留后4位
+            'organization_name': invitation_code.organization.name,
+            'created_by_name': invitation_code.created_by.get_full_name() or invitation_code.created_by.username,
+            'user_name': user.get_full_name() or user.username,
+            'user_email': user.email,
+            'used_at': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'used_count': invitation_code.used_count,
+            'max_uses': invitation_code.max_uses,
+            'remaining_uses': remaining_uses
+        }
+        
+        # 发送通知给邀请码创建者
+        notification = notification_service.create_and_send_notification(
+            recipient=invitation_code.created_by,
+            notification_type_code='org_invitation_code_used',
+            template_vars=template_vars,
+            strategies=['websocket', 'email']  # 同时发送WebSocket和邮件通知
+        )
+        
+        if notification:
+            logger.info(
+                f"邀请码使用通知已发送: {invitation_code.code} -> {invitation_code.created_by.username} (用户: {user.username})"
+            )
+            
+            return {
+                'status': 'success',
+                'message': f'邀请码使用通知已发送给 {invitation_code.created_by.username}'
+            }
+        else:
+            logger.warning(f"邀请码使用通知发送失败: {invitation_code.code}")
+            return {
+                'status': 'error',
+                'message': '通知发送失败'
+            }
+        
+    except Exception as e:
+        logger.error(f"发送邀请码使用通知时发生错误: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f'发送邀请码使用通知时发生错误: {str(e)}'
+        }

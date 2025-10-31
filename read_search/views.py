@@ -102,9 +102,9 @@ def clear_cache_api(request):
         success_messages = []
         
         if cache_type in ['student', 'all'] and student_id:
-            # 清除学生相关缓存
+            # 清除学生相关缓存（已禁用缓存）
             if search_service.clear_student_cache(student_id):
-                success_messages.append(f"学生{student_id}缓存")
+                success_messages.append(f"学生{student_id}缓存（已禁用，无需清除）")
         
         if cache_type in ['milvus', 'all']:
             # 清除Milvus搜索缓存

@@ -334,9 +334,24 @@ def insert_match_from_json(input_json: dict):
                     }
                     new_matches.append(model(**match_kwargs))
                 
-                # 批量插入
+                # 批量插入，忽略重复项以避免IntegrityError
                 if new_matches:
-                    model.objects.bulk_create(new_matches)
+                    try:
+                        model.objects.bulk_create(new_matches, ignore_conflicts=True)
+                    except Exception as e:
+                        # 如果bulk_create失败，尝试逐个插入
+                        print(f"批量插入失败，尝试逐个插入: {e}")
+                        for match_obj in new_matches:
+                            try:
+                                # 使用get_or_create避免重复插入
+                                model.objects.get_or_create(
+                                    **{primary_key_field: getattr(match_obj, primary_key_field),
+                                       tag_field: getattr(match_obj, tag_field)},
+                                    defaults={'created_at': timezone.now()}
+                                )
+                            except Exception as inner_e:
+                                print(f"插入单个记录失败: {inner_e}")
+                                continue
 
 
 # 保持向后兼容的函数名

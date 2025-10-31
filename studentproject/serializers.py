@@ -14,7 +14,7 @@ from project.models import Requirement, File, generate_unique_filename, get_reso
 from common_utils import build_media_url
 from .mixins import AvatarMixin, FilesMixin, LeaderMixin, ContactMixin, StudentBasicFieldsMixin, ReviewMixin, CloudLinkMixin, AuthorInfoMixin
 from .utils import ensure_virtual_folder_exists, handle_cloud_links, validate_file_size, validate_file_type
-# from notification.services import notification_service
+from notification.services import notification_service, org_notification_service
 import uuid
 import os
 import logging
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class StudentBasicSerializer(StudentBasicFieldsMixin, serializers.ModelSerializer):
     """学生基本信息序列化器"""
+    school = serializers.SerializerMethodField()
     
     class Meta:
         model = Student
@@ -32,10 +33,20 @@ class StudentBasicSerializer(StudentBasicFieldsMixin, serializers.ModelSerialize
             'id', 'student_id', 'school', 'major', 'grade',
             'real_name', 'username', 'avatar'
         ]
+    
+    def get_school(self, obj):
+        """序列化学校信息"""
+        if obj.school:
+            return {
+                'id': obj.school.id,
+                'name': obj.school.school
+            }
+        return None
 
 
 class StudentContactSerializer(StudentBasicFieldsMixin, serializers.ModelSerializer):
     """学生联系信息序列化器（包含邮箱和手机号）"""
+    school = serializers.SerializerMethodField()
     email = serializers.EmailField(source='user.email', read_only=True)
     phone = serializers.CharField(source='user.phone', read_only=True)
     
@@ -45,10 +56,20 @@ class StudentContactSerializer(StudentBasicFieldsMixin, serializers.ModelSeriali
             'id', 'student_id', 'school', 'major', 'grade',
             'real_name', 'username', 'avatar', 'email', 'phone'
         ]
+    
+    def get_school(self, obj):
+        """序列化学校信息"""
+        if obj.school:
+            return {
+                'id': obj.school.id,
+                'name': obj.school.school
+            }
+        return None
 
 
 class StudentMaskedContactSerializer(StudentBasicFieldsMixin, ContactMixin, serializers.ModelSerializer):
     """学生脱敏联系信息序列化器（邮箱和手机号脱敏）"""
+    school = serializers.SerializerMethodField()
     email = serializers.SerializerMethodField()
     phone = serializers.SerializerMethodField()
     
@@ -58,6 +79,15 @@ class StudentMaskedContactSerializer(StudentBasicFieldsMixin, ContactMixin, seri
             'id', 'student_id', 'school', 'major', 'grade',
             'real_name', 'username', 'avatar', 'email', 'phone'
         ]
+    
+    def get_school(self, obj):
+        """序列化学校信息"""
+        if obj.school:
+            return {
+                'id': obj.school.id,
+                'name': obj.school.school
+            }
+        return None
 
 
 class RequirementBasicSerializer(serializers.ModelSerializer):
@@ -109,13 +139,13 @@ class ProjectParticipantDetailSerializer(AvatarMixin, serializers.ModelSerialize
         
         # 如果是项目leader，显示完整信息
         if obj.role == 'leader':
-            return StudentContactSerializer(obj.student).data
+            return StudentContactSerializer(obj.student, context=self.context).data
         
         # 判断当前用户是否有权限查看完整信息
         if self._has_full_access(request, project, obj):
-            return StudentContactSerializer(obj.student).data
+            return StudentContactSerializer(obj.student, context=self.context).data
         else:
-            return StudentMaskedContactSerializer(obj.student).data
+            return StudentMaskedContactSerializer(obj.student, context=self.context).data
     
     def _has_full_access(self, request, project, participant):
         """判断是否有完整访问权限"""
@@ -369,15 +399,17 @@ class StudentProjectUpdateSerializer(serializers.ModelSerializer):
         old_status = instance.status
         updated_instance = super().update(instance, validated_data)
         
-        # 检查状态是否发生变更（情形5：项目状态变更通知需求创建者）
+        # 注释掉重复的项目状态变更通知发送逻辑
+        # 该通知已在views.py的update_project函数中处理
         # if 'status' in validated_data and old_status != updated_instance.status:
         #     if updated_instance.requirement:
         #         try:
-        #             notification_service.send_project_status_changed_notification(
-        #                 project=updated_instance,
+        #             org_notification_service.send_project_status_change_notification(
+        #                 requirement_creator=updated_instance.requirement.publish_people.user,
+        #                 project_title=updated_instance.title,
         #                 old_status=old_status,
         #                 new_status=updated_instance.status,
-        #                 requirement=updated_instance.requirement
+        #                 project_obj=updated_instance
         #             )
         #         except Exception as e:
         #             logger.error(f"发送项目状态变更通知失败: {str(e)}")
@@ -701,17 +733,8 @@ class ProjectDeliverableSubmitSerializer(CloudLinkMixin, serializers.ModelSerial
         # 关联所有文件到成果
         deliverable.files.set(all_files)
         
-        # 发送成果提交通知（情形4：项目成果提交通知需求创建者）
-        # if deliverable.project.requirement:
-        #     try:
-        #         notification_service.send_deliverable_submitted_notification(
-        #             deliverable=deliverable,
-        #             project=deliverable.project,
-        #             requirement=deliverable.project.requirement,
-        #             submitter=deliverable.submitter.user
-        #         )
-        #     except Exception as e:
-        #         logger.error(f"发送成果提交通知失败: {str(e)}")
+        # 注意：成果提交通知已通过Django信号自动发送，无需在此处重复调用
+        # 参见 notification/signals.py 中的 handle_deliverable_submission 函数
         
         return deliverable
     
@@ -881,17 +904,30 @@ class ProjectCommentCreateSerializer(AuthorInfoMixin, serializers.ModelSerialize
         comment = super().create(validated_data)
         
         # 发送评语回复通知（情形7：评语被回复时通知评语创建者）
-        # if comment.parent_comment and comment.parent_comment.author != comment.author:
-        #     # 检查原评语作者是否为组织用户
-        #     if hasattr(comment.parent_comment.author, 'organizationuser_profile'):
-        #         try:
-        #             notification_service.send_comment_reply_notification(
-        #                 original_comment=comment.parent_comment,
-        #                 reply_comment=comment,
-        #                 project=comment.project
-        #             )
-        #         except Exception as e:
-        #             logger.error(f"发送评语回复通知失败: {str(e)}")
+        if comment.parent_comment and comment.parent_comment.author != comment.author:
+            # 检查原评语作者是否为组织用户
+            if hasattr(comment.parent_comment.author, 'organizationuser_profile'):
+                try:
+                    # 根据评语类型选择合适的通知方法
+                    if comment.deliverable:
+                        # 成果级评语回复
+                        org_notification_service.send_deliverable_comment_reply_notification(
+                            original_commenter=comment.parent_comment.author,
+                            replier=comment.author,
+                            project=comment.project,
+                            deliverable=comment.deliverable,
+                            comment_content=comment.content
+                        )
+                    else:
+                        # 项目级评语回复
+                        org_notification_service.send_project_comment_reply_notification(
+                            original_commenter=comment.parent_comment.author,
+                            replier=comment.author,
+                            project=comment.project,
+                            comment_content=comment.content
+                        )
+                except Exception as e:
+                    logger.error(f"发送评语回复通知失败: {str(e)}")
         
         return comment
 

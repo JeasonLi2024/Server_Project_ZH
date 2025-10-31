@@ -29,5 +29,31 @@ urlpatterns = [
     # 组织信息管理
     path('update/', views.update_organization, name='update_organization'),
     path('upload-logo/', views.upload_organization_logo, name='upload_organization_logo'),
+    
+    # 高校列表
+    path('universities/', views.university_list, name='university_list'),
+    
+    # ==================== 企业用户组织切换功能 ====================
+    
+    # 用户退出组织
+    path('leave/', views.leave_organization, name='leave_organization'),
+    
+    # 申请加入组织
+    path('apply-join/', views.apply_join_organization, name='apply_join_organization'),
+    
+    # 我的加入申请列表
+    path('my-applications/', views.my_join_applications, name='my_join_applications'),
+    
+    # 取消加入申请
+    path('applications/<int:application_id>/cancel/', views.cancel_join_application, name='cancel_join_application'),
+    
+    # 组织的加入申请列表（管理员使用）
+    path('join-applications/', views.organization_join_applications, name='organization_join_applications'),
+    
+    # 审核加入申请
+    path('applications/<int:application_id>/review/', views.review_join_application, name='review_join_application'),
+    
+    # 通过邀请码加入组织
+    path('join-by-invitation/', views.join_organization_by_invitation, name='join_organization_by_invitation'),
 
 ]

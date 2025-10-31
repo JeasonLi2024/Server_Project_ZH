@@ -1,7 +1,8 @@
 import logging
 import pytz
 from rest_framework import generics, status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.viewsets import ReadOnlyModelViewSet
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -18,6 +19,7 @@ from .models import (
     ProjectComment,
     ProjectInvitation
 )
+from notification.services import notification_service, student_notification_service, org_notification_service
 from .serializers import (
     StudentProjectCreateSerializer,
     StudentProjectUpdateSerializer,
@@ -112,6 +114,21 @@ def create_project(request):
                     application_message='项目创建者自动成为leader'
                 )
                 
+                # 发送项目创建通知（情形3：学生创建项目对接需求时通知需求创建者）
+                if project.requirement:
+                    try:
+                        from notification.services import org_notification_service
+                        org_notification_service.send_project_requirement_notification(
+                            requirement_creator=project.requirement.publish_people.user,
+                            student=request.user,
+                            project_title=project.title,
+                            requirement_title=project.requirement.title,
+                            project_obj=project,
+                            project_status=project.status
+                        )
+                    except Exception as e:
+                        logger.error(f"发送项目创建通知失败: {str(e)}")
+                
                 # 返回详细信息
                 detail_serializer = StudentProjectDetailSerializer(project)
                 return APIResponse.success(
@@ -158,7 +175,69 @@ def update_project(request, project_id):
     
     if serializer.is_valid():
         try:
+            # 保存更新前的状态
+            old_status = project.status
             updated_project = serializer.save()
+            
+            # 检查状态是否发生变更
+            if old_status != updated_project.status:
+                # 发送项目状态变更通知给项目参与者（不包括leader）
+                try:
+                    # 获取项目leader
+                    project_leader = updated_project.get_leader()
+                    # 获取项目参与者（排除leader）
+                    project_members = [
+                        participant.student.user for participant in updated_project.project_participants.filter(status='approved') 
+                        if project_leader is None or participant.student != project_leader
+                    ]
+                    if project_members:
+                        student_notification_service.send_project_status_change_notification(
+                            members=project_members,
+                            project=updated_project,
+                            old_status=old_status,
+                            new_status=updated_project.status,
+                            operator=request.user
+                        )
+                except Exception as e:
+                    logger.error(f"发送项目状态变更通知失败: {str(e)}")
+                
+                # 发送组织通知（给需求发布人）
+                if updated_project.requirement and updated_project.requirement.publish_people:
+                    try:
+                        # 情况1：项目状态由draft改为recruiting或in_progress时，调用org_project_requirement_created
+                        if (old_status == 'draft' and 
+                            updated_project.status in ['recruiting', 'in_progress']):
+                            org_notification_service.send_project_requirement_notification(
+                                requirement_creator=updated_project.requirement.publish_people.user,
+                                student=request.user,
+                                project_title=updated_project.title,
+                                requirement_title=updated_project.requirement.title,
+                                project_obj=updated_project,
+                                project_status=updated_project.status
+                            )
+                        
+                        # 情况2：项目状态改为completed时，发送项目完成通知
+                        elif updated_project.status == 'completed':
+                            org_notification_service.send_project_completion_notification(
+                                requirement_creator=updated_project.requirement.publish_people.user,
+                                project_title=updated_project.title,
+                                project_obj=updated_project
+                            )
+                        
+                        # 情况3：其他普通状态修改，使用send_project_status_change_notification
+                        else:
+                            org_notification_service.send_project_status_change_notification(
+                                requirement_creator=updated_project.requirement.publish_people.user,
+                                project_title=updated_project.title,
+                                old_status=old_status,
+                                new_status=updated_project.status,
+                                project_obj=updated_project,
+                                operator=request.user
+                            )
+                    
+                    except Exception as e:
+                        logger.error(f"发送组织通知失败: {str(e)}")
+            
             # 返回详细信息
             detail_serializer = StudentProjectDetailSerializer(updated_project)
             return APIResponse.success(
@@ -214,8 +293,13 @@ def delete_project(request, project_id):
             ProjectComment.objects.filter(project=project).delete()
             
             # 3. 删除所有相关通知
-            # from notification.models import Notification
-            # Notification.objects.filter(project=project).delete()
+            from notification.models import Notification
+            from django.contrib.contenttypes.models import ContentType
+            project_content_type = ContentType.objects.get_for_model(StudentProject)
+            Notification.objects.filter(
+                content_type=project_content_type,
+                object_id=project.id
+            ).delete()
             
             # 4. 删除所有成果（会自动删除成果链关系）
             deliverables.delete()
@@ -502,6 +586,7 @@ def get_project_list(request):
     - keyword: 搜索关键词 (项目标题、描述)
     - my_projects: true=我创建/负责的项目, false=我加入的项目（仅学生用户可用）
     - organization_id: 组织ID筛选，筛选该组织关联需求下的所有项目（仅组织用户可用）
+    - is_evaluated: 评分状态筛选，true=已评分项目, false=未评分项目（仅对已完成项目有效）
     """
     try:
         
@@ -514,6 +599,7 @@ def get_project_list(request):
         keyword = request.GET.get('keyword', '')
         my_projects = request.GET.get('my_projects')
         organization_id = request.GET.get('organization_id')
+        is_evaluated = request.GET.get('is_evaluated')
         
         # 基础查询集
         user = request.user
@@ -589,6 +675,14 @@ def get_project_list(request):
             queryset = queryset.filter(
                 Q(title__icontains=keyword) | 
                 Q(description__icontains=keyword)
+            )
+        
+        # 评分状态筛选（仅对已完成项目有效）
+        if is_evaluated is not None:
+            is_evaluated_bool = is_evaluated.lower() in ['true', '1', 'yes']
+            queryset = queryset.filter(
+                status='completed',
+                is_evaluated=is_evaluated_bool
             )
         
         # 排序：创建时间倒序
@@ -728,14 +822,13 @@ def apply_to_join_project(request, project_id):
                 status='approved'
             ).first()
             
-            # if leader_participant:
-            #     Notification.objects.create(
-            #         recipient=leader_participant.student.user,
-            #         project=project,
-            #         notification_type='application',
-            #         title='新的项目申请',
-            #         content=f'{student.user.real_name} 申请加入项目 "{project.title}"'
-            #     )
+            if leader_participant:
+                student_notification_service.send_project_application_notification(
+                    leader=leader_participant.student.user,
+                    applicant=student.user,
+                    project=project,
+                    application_message=serializer.validated_data.get('application_message', '')
+                )
         
         return APIResponse.success(
             message="申请提交成功，请等待项目负责人审核"
@@ -823,13 +916,22 @@ def handle_applications(request, project_id):
                 participant.save()
                 
                 # 创建通知给申请者
-                # Notification.objects.create(
-                #     recipient=participant.student.user,
-                #     project=project,
-                #     notification_type='application_result',
-                #     title='申请审核结果',
-                #     content=f'您申请加入项目 "{project.title}" 的结果：{"已通过" if action == "approve" else "未通过"}'
-                # )
+                if action == "approve":
+                    student_notification_service.send_application_result_notification(
+                        applicant=participant.student.user,
+                        project=project,
+                        result='approved',
+                        reviewer=leader_participant.student.user,
+                        review_message=review_message
+                    )
+                else:
+                    student_notification_service.send_application_result_notification(
+                        applicant=participant.student.user,
+                        project=project,
+                        result='rejected',
+                        reviewer=leader_participant.student.user,
+                        review_message=review_message
+                    )
                 
                 # 记录处理的学生信息
                 student_info = f"{participant.student.user.username}（{participant.student.user.real_name or participant.student.user.username}）"
@@ -880,7 +982,11 @@ def get_project_participants(request, project_id):
             )
         
         # 获取查询参数
-        page_size = min(int(request.GET.get('page_size', 10)), 50)
+        page_size_param = request.GET.get('page_size', '10')
+        try:
+            page_size = min(int(page_size_param) if page_size_param else 10, 50)
+        except (ValueError, TypeError):
+            page_size = 10
         
         # 获取所有已批准的参与者
         participants_queryset = ProjectParticipant.objects.filter(
@@ -1038,57 +1144,62 @@ def update_participant_status(request, project_id, participant_id):
             target_user_name = participant.student.user.real_name or participant.student.user.username
             
             # 根据操作者和状态变更创建相应的通知
-            # if is_self and new_status == 'left':
-            #     # 用户自行退出项目，通知项目负责人
-            #     if leader_participant:
-            #         Notification.objects.create(
-            #             recipient=leader_participant.student.user,
-            #             project=project,
-            #             notification_type='member_left',
-            #             title='成员退出项目',
-            #             content=f'{target_user_name} 已退出项目 "{project.title}"'
-            #         )
-            #     return APIResponse.success(
-            #         message="已成功退出项目"
-            #     )
-            # elif leader_participant and not is_self:
-            #     # 负责人修改其他成员状态
-            #     if new_status == 'left':
-            #         # 踢出成员，通知被踢出者
-            #         Notification.objects.create(
-            #             recipient=participant.student.user,
-            #             project=project,
-            #             notification_type='member_kicked',
-            #             title='您已被移出项目',
-            #             content=f'您已被移出项目 "{project.title}"' + (f'，原因：{reason}' if reason else '')
-            #         )
-            #         return APIResponse.success(
-            #             message=f"{target_user_name} 已被移出项目"
-            #         )
-            #     elif new_status == 'approved':
-            #         # 激活成员
-            #         Notification.objects.create(
-            #             recipient=participant.student.user,
-            #             project=project,
-            #             notification_type='status_change',
-            #             title='参与状态变更',
-            #             content=f'您在项目 "{project.title}" 中的参与状态已被激活' + (f'，原因：{reason}' if reason else '')
-            #         )
-            #         return APIResponse.success(
-            #             message=f"{target_user_name} 已被激活"
-            #         )
-            #     else:
-            #         # 其他状态变更
-            #         Notification.objects.create(
-            #             recipient=participant.student.user,
-            #             project=project,
-            #             notification_type='status_change',
-            #             title='参与状态变更',
-            #             content=f'您在项目 "{project.title}" 中的参与状态已被停用' + (f'，原因：{reason}' if reason else '')
-            #         )
-            #         return APIResponse.success(
-            #             message=f"{target_user_name} 已被停用"
-            #         )
+            if is_self and new_status == 'left':
+                # 用户自行退出项目，通知项目负责人
+                # 获取项目负责人
+                project_leader = ProjectParticipant.objects.filter(
+                    project=project,
+                    role='leader',
+                    status='approved'
+                ).first()
+                
+                if project_leader:
+                    student_notification_service.send_member_left_notification(
+                        leader=project_leader.student.user,
+                        member=participant.student.user,
+                        project=project,
+                        member_role=participant.role
+                    )
+                return APIResponse.success(
+                    message="已成功退出项目"
+                )
+            elif leader_participant and not is_self:
+                # 负责人修改其他成员状态
+                if new_status == 'left':
+                    # 踢出成员，通知被踢出者
+                    student_notification_service.send_member_kicked_notification(
+                        member=participant.student.user,
+                        project=project,
+                        operator=leader_participant.student.user,
+                        reason=reason
+                    )
+                    return APIResponse.success(
+                        message=f"{target_user_name} 已被移出项目"
+                    )
+                elif new_status == 'approved':
+                    # 激活成员
+                    student_notification_service.send_member_status_change_notification(
+                        member=participant.student.user,
+                        project=project,
+                        old_status=old_status,
+                        new_status=new_status,
+                        operator=leader_participant.student.user
+                    )
+                    return APIResponse.success(
+                        message=f"{target_user_name} 已被激活"
+                    )
+                else:
+                    # 其他状态变更
+                    student_notification_service.send_member_status_change_notification(
+                        member=participant.student.user,
+                        project=project,
+                        old_status=old_status,
+                        new_status=new_status,
+                        operator=leader_participant.student.user
+                    )
+                    return APIResponse.success(
+                        message=f"{target_user_name} 已被停用"
+                    )
         
         return APIResponse.success(
             message="参与者状态修改成功"
@@ -1167,30 +1278,37 @@ def transfer_leadership(request, project_id):
             # 将新成员提升为负责人
             new_leader.role = 'leader'
             new_leader.save()
+        
+        # 数据库操作成功后，发送通知
+        try:
+            # 发送专门的负责人转移通知给新负责人
+            student_notification_service.send_leadership_transfer_notification(
+                new_leader=new_leader.student.user,
+                project=project,
+                original_leader=current_leader.student.user,
+                transfer_message=serializer.validated_data.get('transfer_message')
+            )
             
-            # 创建通知给新负责人
-            # Notification.objects.create(
-            #     recipient=new_leader.student.user,
-            #     project=project,
-            #     notification_type='role_change',
-            #     title='身份权限变更',
-            #     content=f'您已被任命为项目 "{project.title}" 的负责人' + (f'，原因：{transfer_reason}' if transfer_reason else '')
-            # )
+            # 发送负责人变更通知给其他成员（不包括新旧负责人）
+            # 获取除新旧负责人外的所有项目成员
+            other_members = project.project_participants.exclude(
+                id__in=[new_leader.id, current_leader.id]
+            ).filter(status='approved')
+            member_users = [participant.student.user for participant in other_members]
             
-            # 创建通知给项目其他成员
-            # other_participants = ProjectParticipant.objects.filter(
-            #     project=project,
-            #     status='approved'
-            # ).exclude(id__in=[current_leader.id, new_leader.id])
+            if member_users:  # 只有当有其他成员时才发送通知
+                student_notification_service.send_leadership_change_notification(
+                    members=member_users,
+                    project=project,
+                    new_leader=new_leader.student.user,
+                    original_leader=current_leader.student.user,
+                    transfer_message=serializer.validated_data.get('transfer_message')
+                )
+        except Exception as notification_error:
+            # 通知发送失败不影响身份转移的成功
+            logger.warning(f"身份转移成功，但通知发送失败: {str(notification_error)}")
             
-            # for participant in other_participants:
-            #     Notification.objects.create(
-            #         recipient=participant.student.user,
-            #         project=project,
-            #         notification_type='role_change',
-            #         title='项目负责人变更',
-            #         content=f'项目 "{project.title}" 的负责人已变更为 {new_leader.student.user.real_name}'
-            #     )
+
         
         return APIResponse.success(
             message=f"负责人身份已成功转移给 {new_leader.student.user.real_name}"
@@ -1282,6 +1400,30 @@ def send_invitation(request, project_id):
                 message="已向该学生发送过邀请，请等待回复"
             )
         
+        # 检查是否有被拒绝或过期的邀请，如果有则可以重新邀请
+        # 先处理过期但状态仍为pending的邀请
+        expired_pending_invitations = ProjectInvitation.objects.filter(
+            project=project,
+            invitee=invitee,
+            status='pending'
+        ).filter(expires_at__lt=timezone.now())
+        
+        # 更新过期邀请的状态
+        if expired_pending_invitations.exists():
+            expired_pending_invitations.update(status='expired')
+        
+        # 删除之前被拒绝或过期的邀请记录，避免唯一性约束冲突
+        old_invitations = ProjectInvitation.objects.filter(
+            project=project,
+            invitee=invitee,
+            status__in=['rejected', 'expired']
+        )
+        
+        if old_invitations.exists():
+            old_count = old_invitations.count()
+            old_invitations.delete()
+            logger.info(f"删除了 {old_count} 个旧邀请记录，项目ID: {project_id}, 被邀请者: {invitee_username}")
+        
         # 创建邀请
         with transaction.atomic():
             invitation = ProjectInvitation.objects.create(
@@ -1292,13 +1434,13 @@ def send_invitation(request, project_id):
             )
             
             # 创建通知
-            # Notification.objects.create(
-            #     recipient=invitee.user,
-            #     project=project,
-            #     notification_type='project_invitation',
-            #     title='项目邀请',
-            #     content=f'{student.user.real_name} 邀请您加入项目 "{project.title}"'
-            # )
+            student_notification_service.send_project_invitation_notification(
+                invitee=invitee.user,
+                inviter=student.user,
+                project=project,
+                invitation=invitation,
+                invitation_message=invitation_message
+            )
         
         return APIResponse.success(
             message=f"已成功向 {invitee.user.real_name} 发送邀请",
@@ -1375,24 +1517,24 @@ def respond_to_invitation(request, invitation_id):
                 )
                 
                 # 通知邀请者
-                # Notification.objects.create(
-                #     recipient=invitation.inviter.user,
-                #     project=invitation.project,
-                #     notification_type='invitation_accepted',
-                #     title='邀请已接受',
-                #     content=f'{student.user.real_name} 接受了您的邀请，已加入项目 "{invitation.project.title}"'
-                # )
+                student_notification_service.send_invitation_response_notification(
+                    inviter=invitation.inviter.user,
+                    invitee=student.user,
+                    project=invitation.project,
+                    response='accepted',
+                    response_message=response_message
+                )
                 
                 message = f"已成功加入项目 \"{invitation.project.title}\""
             else:
                 # 拒绝邀请
-                # Notification.objects.create(
-                #     recipient=invitation.inviter.user,
-                #     project=invitation.project,
-                #     notification_type='invitation_rejected',
-                #     title='邀请已拒绝',
-                #     content=f'{student.user.real_name} 拒绝了您的邀请加入项目 "{invitation.project.title}"'
-                # )
+                student_notification_service.send_invitation_response_notification(
+                    inviter=invitation.inviter.user,
+                    invitee=student.user,
+                    project=invitation.project,
+                    response='rejected',
+                    response_message=response_message
+                )
                 
                 message = f"已拒绝加入项目 \"{invitation.project.title}\""
         
@@ -1566,7 +1708,7 @@ def update_deliverable(request, project_id, deliverable_id):
         if not serializer.is_valid():
             return APIResponse.error(
                 message="请求参数错误",
-                errors=format_validation_errors(serializer.errors)
+                data=format_validation_errors(serializer.errors)
             )
         
         # 更新成果记录，设置最新修改人和更新标识
@@ -1648,6 +1790,7 @@ def get_deliverable_list(request, project_id):
         include_deprecated = request.GET.get('include_deprecated', 'true').lower() == 'true'
         milestone = request.GET.get('milestone', 'false').lower() == 'true'
         latest_per_stage = request.GET.get('latest_per_stage', 'false').lower() == 'true'
+        
         try:
             page = int(request.GET.get('page', 1) or 1)
         except (ValueError, TypeError):
@@ -1955,6 +2098,20 @@ def create_comment(request, project_id):
         
         if serializer.is_valid():
             comment = serializer.save()
+            
+            # 发送项目评论通知给所有项目成员
+            try:
+                # 获取项目所有成员
+                project_members = [p.user for p in project.participants.filter(status='active')]
+                student_notification_service.send_project_commented_notification(
+                    members=project_members,
+                    project=project,
+                    commenter=user,
+                    comment_content=comment.content,
+                    comment_obj=comment
+                )
+            except Exception as e:
+                logger.error(f"发送项目评论通知失败: {str(e)}")
             
             # 返回创建的评语详情
             from .serializers import ProjectCommentSerializer

@@ -27,7 +27,7 @@ from .verification_utils import (
 from .serializers import (
     EmailCodeSerializer, RegisterSerializer, LoginSerializer,
     PasswordChangeSerializer, PasswordResetRequestSerializer,
-    PasswordResetSerializer, TokenVerifySerializer, RefreshTokenSerializer,
+    PasswordResetSerializer, ForgotPasswordSerializer, TokenVerifySerializer, RefreshTokenSerializer,
     LogoutSerializer, LoginLogSerializer, EmailCodeValidationSerializer, 
     UserExistsCheckSerializer, ChangeEmailSerializer,
     AccountDeletionRequestSerializer, AccountDeletionLogSerializer,
@@ -81,7 +81,7 @@ def send_email_code(request):
         return APIResponse.error('该邮箱已注册', 422, {'email': ['该邮箱已注册']})
     
     # 如果是登录或重置验证码，检查邮箱是否已注册
-    if code_type in ['login', 'reset'] and not User.objects.filter(email=email).exists():
+    if code_type in ['login', 'reset_password'] and not User.objects.filter(email=email).exists():
         return APIResponse.error('该邮箱未注册', 422, {'email': ['该邮箱未注册']})
     
     # 如果是修改邮箱验证码，检查邮箱是否已被其他用户使用
@@ -131,13 +131,16 @@ def register(request):
             # 记录注册成功日志
             create_login_log(user, request, 'register', True)
             
+            # 序列化用户完整信息
+            user_serializer = UserProfileSerializer(user, context={'request': request})
+            
             return APIResponse.success({
                 'user': {
-                    'id': str(user.id),
+                    'id': user.id,
                     'username': user.username,
                     'email': user.email,
                     'user_type': user.user_type,
-                    'user_type_display': user.get_user_type_display(),
+                    'user_type_display': user.get_user_type_display()
                 },
                 'tokens': {
                     'access_token': str(access_token),
@@ -403,7 +406,7 @@ def reset_password_request(request):
     email = serializer.validated_data['email']
     
     # 发送重置验证码
-    if send_verification_code(email, 'reset'):
+    if send_verification_code(email, 'reset_password'):
         return APIResponse.success({
             'email': email
         })
@@ -812,3 +815,43 @@ def send_account_deletion_cancel_notification(user, deletion_log):
     except Exception as e:
         logger.error(f"账户注销取消确认邮件发送失败: {user.email} - {str(e)}")
         return False
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def forgot_password(request):
+    """忘记密码 - 完整的忘记密码流程"""
+    serializer = ForgotPasswordSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        return APIResponse.validation_error(
+            format_validation_errors(serializer.errors)
+        )
+    
+    try:
+        email = serializer.validated_data['email']
+        new_password = serializer.validated_data['new_password']
+        
+        # 获取用户并重置密码
+        user = User.objects.get(email=email)
+        user.set_password(new_password)
+        user.save()
+        
+        # 记录密码重置日志
+        create_login_log(user, request, 'password_reset', True, '通过忘记密码功能重置')
+        
+        logger.info(f"用户 {user.username} 通过忘记密码功能成功重置密码")
+        
+        return APIResponse.success({
+            'message': '密码重置成功，请使用新密码登录'
+        }, "密码重置成功")
+        
+    except User.DoesNotExist:
+        return APIResponse.error('验证失败', 422, {'email': ['用户不存在']})
+    except Exception as e:
+        logger.error(f"忘记密码重置失败: {str(e)}")
+        return APIResponse.server_error('密码重置失败，请稍后重试', errors={
+            'exception_type': type(e).__name__,
+            'exception_message': str(e)
+        })

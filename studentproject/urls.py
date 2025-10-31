@@ -1,7 +1,12 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from . import views
 
 app_name = 'studentproject'
+
+# 创建DRF路由器
+router = DefaultRouter()
+
 
 urlpatterns = [
     # 项目管理接口
@@ -39,4 +44,7 @@ urlpatterns = [
     path('projects/<int:project_id>/comments/<int:comment_id>/update/', views.update_comment, name='update_comment'),
     path('projects/<int:project_id>/comments/<int:comment_id>/delete/', views.delete_comment, name='delete_comment'),
     path('projects/<int:project_id>/comments/<int:comment_id>/replies/', views.get_comment_replies, name='get_comment_replies'),
+    
+    # 包含DRF路由器的URL
+    path('', include(router.urls)),
 ]

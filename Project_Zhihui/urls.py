@@ -33,6 +33,12 @@ urlpatterns = [
     path('api/v1/pdf/', include('process_pdf.urls')),
     path('api/v1/tag/', include('tag_db_writer.urls')),
     path('api/v1/search/', include('read_search.urls')),
+    path('api/v1/notification/', include('notification.urls')),
+    path('api/v1/dashboard/', include('dashboard.urls')),
+    path('api/v1/audit/', include('audit.urls')),
+    
+    # CAS认证路由
+    path('api/v1/cas/', include('cas_auth.urls')),
 ]
 
 # 开发环境下提供静态文件和媒体文件服务

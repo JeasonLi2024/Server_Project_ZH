@@ -17,6 +17,9 @@ def update_evaluation_scores(sender, instance, **kwargs):
     evaluation.save(update_fields=['total_score', 'weighted_score'])
 
 
+
+
+
 @receiver(post_save, sender=ProjectEvaluation)
 def update_project_ranking(sender, instance, **kwargs):
     """更新项目排名"""
@@ -27,17 +30,21 @@ def update_project_ranking(sender, instance, **kwargs):
             criteria=instance.criteria,
             defaults={'final_score': instance.weighted_score, 'rank': 1}
         )
-
+        
         if not created:
             ranking.final_score = instance.weighted_score
             ranking.save()
-
+        
         # 重新计算所有排名
         rankings = ProjectRanking.objects.filter(
             criteria=instance.criteria
         ).order_by('-final_score')
-
+        
         for index, rank_obj in enumerate(rankings, 1):
             if rank_obj.rank != index:
                 rank_obj.rank = index
                 rank_obj.save(update_fields=['rank'])
+
+
+# 注意：评分标准与需求的关联现在通过 project.Requirement.evaluation_criteria 字段管理
+# 不再需要从评分标准侧同步关联关系

@@ -1,4 +1,9 @@
 from django.contrib import admin
+from django.contrib import messages
+from django.db import transaction
+from django.http import HttpResponseRedirect
+from django.urls import path
+from django.shortcuts import render
 from .models import (
     StudentProject,
     ProjectParticipant,
@@ -52,6 +57,7 @@ class StudentProjectAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
     raw_id_fields = ['requirement']
     inlines = [ProjectParticipantInline]
+    actions = ['safe_delete_selected']
     
     fieldsets = (
         ('基本信息', {
@@ -81,6 +87,91 @@ class StudentProjectAdmin(admin.ModelAdmin):
             return f"{leader.user.real_name} ({leader.student_number}) - {leader.user.email}"
         return '无负责人'
     get_leader_info.short_description = '负责人详情'
+    
+    def safe_delete_selected(self, request, queryset):
+        """安全删除选中的项目"""
+        if request.POST.get('post'):
+            # 执行删除
+            deleted_count = 0
+            error_count = 0
+            
+            for project in queryset:
+                try:
+                    with transaction.atomic():
+                        project_title = project.title
+                        project.delete()
+                        deleted_count += 1
+                        self.message_user(
+                            request,
+                            f'项目 "{project_title}" 已成功删除',
+                            messages.SUCCESS
+                        )
+                except Exception as e:
+                    error_count += 1
+                    self.message_user(
+                        request,
+                        f'删除项目 "{project.title}" 时出错: {str(e)}',
+                        messages.ERROR
+                    )
+            
+            if error_count > 0:
+                self.message_user(
+                    request,
+                    f'建议使用命令行工具处理外键约束问题: python manage.py safe_delete_project <project_id>',
+                    messages.WARNING
+                )
+            
+            return HttpResponseRedirect(request.get_full_path())
+        
+        # 显示确认页面
+        context = {
+            'title': '确认删除项目',
+            'objects': queryset,
+            'action_checkbox_name': admin.ACTION_CHECKBOX_NAME,
+        }
+        
+        # 统计相关数据
+        total_rankings = 0
+        total_evaluations = 0
+        total_participants = 0
+        
+        for project in queryset:
+            total_rankings += project.project_rankings.count()
+            total_evaluations += project.project_evaluations.count()
+            total_participants += project.project_participants.count()
+        
+        context.update({
+            'total_rankings': total_rankings,
+            'total_evaluations': total_evaluations,
+            'total_participants': total_participants,
+        })
+        
+        return render(request, 'admin/studentproject/safe_delete_confirmation.html', context)
+    
+    safe_delete_selected.short_description = '安全删除选中的项目'
+    
+    def delete_model(self, request, obj):
+        """重写单个删除方法"""
+        try:
+            with transaction.atomic():
+                super().delete_model(request, obj)
+                self.message_user(
+                    request,
+                    f'项目 "{obj.title}" 已成功删除',
+                    messages.SUCCESS
+                )
+        except Exception as e:
+            self.message_user(
+                request,
+                f'删除项目时出错: {str(e)}。建议使用命令行工具: python manage.py safe_delete_project {obj.id}',
+                messages.ERROR
+            )
+            raise
+    
+    def delete_queryset(self, request, queryset):
+        """重写批量删除方法"""
+        for obj in queryset:
+            self.delete_model(request, obj)
 
 
 @admin.register(ProjectParticipant)

@@ -1,5 +1,7 @@
 Supervisor常用命令：
 supervisorctl restart django_project_zhihui django_project_zhihui_test 
+supervisorctl restart celery_worker
+supervisorctl restart celery_beat
 
 # 查看状态
 supervisorctl -c /home/undergraduate/Workspace/bupt_zh/supervisord.conf status
@@ -44,3 +46,53 @@ supervisorctl -c /home/undergraduate/Workspace/bupt_zh/supervisord.conf tail dja
 
 # 停止测试环境
 supervisorctl -c /home/undergraduate/Workspace/bupt_zh/supervisord.conf stop django_project_zhihui_test
+
+
+## 问题分析
+错误原因 ： unix:///tmp/supervisor.sock no such file 表示supervisorctl无法找到supervisor的socket文件，这是因为：
+
+1. 1.
+   系统级的supervisor正在运行，但使用的是 /etc/supervisor/supervisord.conf 配置
+2. 2.
+   项目需要使用自己的supervisor配置文件 /home/undergraduate/Workspace/bupt_zh/supervisord.conf
+3. 3.
+   项目特定的supervisor实例没有启动
+## 解决步骤
+1. 1.
+   启动项目supervisor ：使用项目配置文件启动supervisor守护进程
+   
+   ```
+   supervisord -c /home/undergraduate/Workspace/bupt_zh/supervisord.conf
+   ```
+2. 2.
+   重启Django服务 ：使用正确的配置文件重启Django项目
+   
+   ```
+   supervisorctl -c /home/
+   undergraduate/Workspace/bupt_zh/
+   supervisord.conf restart 
+   django_project_zhihui 
+   django_project_zhihui_test
+   ```
+## 当前状态
+- ✅ django_project_zhihui : RUNNING (正常运行)
+- ✅ django_project_zhihui_test : RUNNING (正常运行)
+- ❌ celery_beat : FATAL (需要单独排查)
+- ❌ celery_worker : FATAL (需要单独排查)
+## 使用建议
+今后使用supervisorctl时，请记得指定项目配置文件：
+
+```
+supervisorctl -c /home/
+undergraduate/Workspace/bupt_zh/
+supervisord.conf [command]
+```
+或者可以设置环境变量简化命令：
+
+```
+export SUPERVISOR_CONFIG=/home/
+undergraduate/Workspace/bupt_zh/
+supervisord.conf
+supervisorctl [command]
+```
+Django项目现在已经正常运行，之前实现的密码重置邮件功能也已生效。

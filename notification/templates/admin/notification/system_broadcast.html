@@ -1,0 +1,732 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block extrastyle %}
+<style>
+    select, select.form-control, .form-select {
+        color: black !important;
+        background-color: white !important;
+        height: auto !important;
+        min-height: 38px !important;
+        appearance: auto !important;
+        -webkit-appearance: menulist !important;
+        -moz-appearance: menulist !important;
+    }
+    select option, select.form-control option, .form-select option {
+        color: black !important;
+        background-color: white !important;
+        padding: 8px !important;
+        line-height: 1.5 !important;
+        height: auto !important;
+    }
+</style>
+
+<script>
+// 广播类型模板自动填充功能
+document.addEventListener('DOMContentLoaded', function() {
+    const broadcastTypeSelect = document.querySelector('select[name="broadcast_type"]');
+    const titleInput = document.querySelector('input[name="title"]');
+    const contentTextarea = document.querySelector('textarea[name="content"]');
+    
+    console.log('Elements found:', {
+        broadcastTypeSelect: !!broadcastTypeSelect,
+        titleInput: !!titleInput,
+        contentTextarea: !!contentTextarea
+    });
+    
+    if (broadcastTypeSelect && titleInput && contentTextarea) {
+        // 监听广播类型选择变化
+        broadcastTypeSelect.addEventListener('change', function() {
+            const selectedType = this.value;
+            if (selectedType) {
+                loadTemplate(selectedType);
+            }
+        });
+        
+        // 页面加载时如果已有选中值，也加载模板
+        if (broadcastTypeSelect.value) {
+            loadTemplate(broadcastTypeSelect.value);
+        }
+    }
+    
+    function loadTemplate(broadcastType) {
+        // 构建API URL
+        const apiUrl = window.location.pathname.replace('system-broadcast/', 'get-broadcast-template/') + '?type=' + encodeURIComponent(broadcastType);
+        
+        // 发送AJAX请求获取模板
+        fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/json',
+            },
+            credentials: 'same-origin'
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('API Response:', data);
+            if (data.success && data.template) {
+                console.log('Template data:', data.template);
+                
+                // 简化逻辑：如果字段为空就直接填充，如果有内容就询问用户
+                const titleHasContent = titleInput.value.trim() !== '';
+                const contentHasContent = contentTextarea.value.trim() !== '';
+                
+                console.log('Current field status:', {
+                    titleHasContent,
+                    contentHasContent,
+                    titleValue: titleInput.value,
+                    contentValue: contentTextarea.value
+                });
+                
+                if (!titleHasContent && !contentHasContent) {
+                    // 两个字段都为空，直接填充
+                    fillTemplate(data.template);
+                } else {
+                    // 有内容，询问用户是否替换
+                    if (confirm('检测到您已填写了内容，是否要使用模板内容替换？')) {
+                        fillTemplate(data.template);
+                    }
+                }
+            } else {
+                console.log('No template data or API call failed');
+            }
+        })
+        .catch(error => {
+            console.error('加载模板失败:', error);
+            // 静默失败，不影响用户体验
+        });
+    }
+    
+    function fillTemplate(template) {
+        console.log('Filling template:', template);
+        
+        if (template.title) {
+            console.log('Setting title to:', template.title);
+            titleInput.value = template.title;
+            // 触发input事件以确保任何监听器都能响应
+            titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        
+        if (template.content) {
+            console.log('Setting content to:', template.content);
+            contentTextarea.value = template.content;
+            // 触发input事件以确保任何监听器都能响应
+            contentTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        
+        console.log('Template filled. Current values:', {
+            title: titleInput.value,
+            content: contentTextarea.value
+        });
+        
+        // 添加视觉反馈
+        showTemplateLoadedMessage();
+    }
+    
+    function showTemplateLoadedMessage() {
+        // 创建提示消息
+        const message = document.createElement('div');
+        message.className = 'template-loaded-message';
+        message.innerHTML = '<i class="icon-check"></i> 已自动填充模板内容，您可以根据需要进行修改';
+        message.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10000;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            animation: slideInRight 0.3s ease-out;
+        `;
+        
+        // 添加动画样式
+        if (!document.querySelector('#template-message-styles')) {
+            const style = document.createElement('style');
+            style.id = 'template-message-styles';
+            style.textContent = `
+                @keyframes slideInRight {
+                    from {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+                @keyframes slideOutRight {
+                    from {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                    to {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        document.body.appendChild(message);
+        
+        // 3秒后自动消失
+        setTimeout(() => {
+            message.style.animation = 'slideOutRight 0.3s ease-in';
+            setTimeout(() => {
+                if (message.parentNode) {
+                    message.parentNode.removeChild(message);
+                }
+            }, 300);
+        }, 3000);
+    }
+});
+</script>
+
+{% endblock %}
+
+{% block title %}发送系统广播通知 | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:notification_notification_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; 发送系统广播通知
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="broadcast-container">
+        
+        <!-- 页面标题 -->
+        <div class="page-header">
+            <h1><i class="icon-broadcast"></i> 发送系统广播通知</h1>
+            <p class="subtitle">向用户发送重要的系统级通知消息</p>
+        </div>
+
+        <!-- 消息提示 -->
+        {% if messages %}
+            <div class="messages-container">
+                {% for message in messages %}
+                    <div class="message message-{{ message.tags }}">
+                        <i class="icon-{% if message.tags == 'success' %}check{% elif message.tags == 'error' %}warning{% else %}info{% endif %}"></i>
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+        
+        <!-- 广播表单 -->
+        <div class="broadcast-form-card">
+            <form method="post" novalidate>
+                {% csrf_token %}
+                
+                <!-- 基本信息 -->
+                 <div class="form-section">
+                     <h3 class="section-title"><i class="icon-settings"></i> 基本信息</h3>
+                     
+                     <div class="form-grid">
+                         <div class="form-field">
+                             <label for="{{ form.broadcast_type.id_for_label }}">{{ form.broadcast_type.label }}</label>
+
+                             <select name="{{ form.broadcast_type.name }}" id="{{ form.broadcast_type.id_for_label }}" style="color: black !important; background-color: white !important; padding: 10px; border: 1px solid #ccc; border-radius: 4px; width: 100%; height: auto; min-height: 38px;">
+                                 {% for value, label in form.broadcast_type.field.choices %}
+                                     <option value="{{ value }}" {% if form.broadcast_type.value|stringformat:"s" == value|stringformat:"s" or form.broadcast_type.value == None and value == form.broadcast_type.initial %}selected{% endif %} style="color: black !important; background-color: white !important; padding: 8px; line-height: 1.5;">
+                                         {{ label }}
+                                     </option>
+                                 {% endfor %}
+                             </select>
+                             {% if form.broadcast_type.help_text %}
+                                 <p class="field-help">{{ form.broadcast_type.help_text }}</p>
+                             {% endif %}
+                             {% if form.broadcast_type.errors %}
+                                 <div class="field-errors">
+                                     {% for error in form.broadcast_type.errors %}
+                                         <span class="error-message">{{ error }}</span>
+                                     {% endfor %}
+                                 </div>
+                             {% endif %}
+                         </div>
+                         
+                         <div class="form-field">
+                             <label for="{{ form.priority.id_for_label }}">{{ form.priority.label }}</label>
+
+                             <select name="{{ form.priority.name }}" id="{{ form.priority.id_for_label }}" style="color: black !important; background-color: white !important; padding: 10px; border: 1px solid #ccc; border-radius: 4px; width: 100%; height: auto; min-height: 38px;">
+                                 {% for value, label in form.priority.field.choices %}
+                                     <option value="{{ value }}" {% if form.priority.value|stringformat:"s" == value|stringformat:"s" or form.priority.value == None and value == form.priority.initial %}selected{% endif %} style="color: black !important; background-color: white !important; padding: 8px; line-height: 1.5;">
+                                         {{ label }}
+                                     </option>
+                                 {% endfor %}
+                             </select>
+                             {% if form.priority.help_text %}
+                                 <p class="field-help">{{ form.priority.help_text }}</p>
+                             {% endif %}
+                             {% if form.priority.errors %}
+                                 <div class="field-errors">
+                                     {% for error in form.priority.errors %}
+                                         <span class="error-message">{{ error }}</span>
+                                     {% endfor %}
+                                 </div>
+                             {% endif %}
+                         </div>
+                     </div>
+                     
+                     <div class="form-field full-width">
+                         <label for="{{ form.title.id_for_label }}">{{ form.title.label }}</label>
+                         <input type="text" name="{{ form.title.name }}" id="{{ form.title.id_for_label }}" 
+                                value="{{ form.title.value|default:'' }}" maxlength="200" 
+                                placeholder="请输入通知标题" class="form-input">
+                         {% if form.title.help_text %}
+                             <p class="field-help">{{ form.title.help_text }}</p>
+                         {% endif %}
+                         {% if form.title.errors %}
+                             <div class="field-errors">
+                                 {% for error in form.title.errors %}
+                                     <span class="error-message">{{ error }}</span>
+                                 {% endfor %}
+                             </div>
+                         {% endif %}
+                     </div>
+                     
+                     <div class="form-field full-width">
+                         <label for="{{ form.content.id_for_label }}">{{ form.content.label }}</label>
+                         <textarea name="{{ form.content.name }}" id="{{ form.content.id_for_label }}" 
+                                   rows="6" placeholder="请输入通知内容" class="form-textarea">{{ form.content.value|default:'' }}</textarea>
+                         {% if form.content.help_text %}
+                             <p class="field-help">{{ form.content.help_text }}</p>
+                         {% endif %}
+                         {% if form.content.errors %}
+                             <div class="field-errors">
+                                 {% for error in form.content.errors %}
+                                     <span class="error-message">{{ error }}</span>
+                                 {% endfor %}
+                             </div>
+                         {% endif %}
+                     </div>
+                 </div>
+                
+                <!-- 发送设置 -->
+                 <div class="form-section">
+                     <h3 class="section-title"><i class="icon-send"></i> 发送设置</h3>
+                     
+                     <div class="form-grid">
+                         <div class="form-field">
+                             <label for="{{ form.target_users.id_for_label }}">{{ form.target_users.label }}</label>
+
+                             <select name="{{ form.target_users.name }}" id="{{ form.target_users.id_for_label }}" style="color: black !important; background-color: white !important; padding: 10px; border: 1px solid #ccc; border-radius: 4px; width: 100%; height: auto; min-height: 38px;">
+                                 {% for value, label in form.target_users.field.choices %}
+                                     <option value="{{ value }}" {% if form.target_users.value|stringformat:"s" == value|stringformat:"s" or form.target_users.value == None and value == form.target_users.initial %}selected{% endif %} style="color: black !important; background-color: white !important; padding: 8px; line-height: 1.5;">
+                                         {{ label }}
+                                     </option>
+                                 {% endfor %}
+                             </select>
+                             {% if form.target_users.help_text %}
+                                 <p class="field-help">{{ form.target_users.help_text }}</p>
+                             {% endif %}
+                             {% if form.target_users.errors %}
+                                 <div class="field-errors">
+                                     {% for error in form.target_users.errors %}
+                                         <span class="error-message">{{ error }}</span>
+                                     {% endfor %}
+                                 </div>
+                             {% endif %}
+                         </div>
+                         
+                         <div class="form-field">
+                             <label for="{{ form.expires_at.id_for_label }}">过期时间</label>
+                             <input type="datetime-local" name="{{ form.expires_at.name }}" id="{{ form.expires_at.id_for_label }}" 
+                                    value="{{ form.expires_at.value|date:'Y-m-d\TH:i' }}" 
+                                    class="form-input">
+                             {% if form.expires_at.help_text %}
+                                 <p class="field-help">{{ form.expires_at.help_text }}</p>
+                             {% endif %}
+                             {% if form.expires_at.errors %}
+                                 <div class="field-errors">
+                                     {% for error in form.expires_at.errors %}
+                                         <span class="error-message">{{ error }}</span>
+                                     {% endfor %}
+                                 </div>
+                             {% endif %}
+                         </div>
+                     </div>
+                     
+                     <div class="form-field checkbox-field">
+                         <label class="checkbox-label">
+                             <input type="checkbox" name="{{ form.send_email.name }}" id="{{ form.send_email.id_for_label }}" 
+                                    {% if form.send_email.value %}checked{% endif %} class="form-checkbox">
+                             <span class="checkbox-text">{{ form.send_email.label }}</span>
+                         </label>
+                         {% if form.send_email.help_text %}
+                             <p class="field-help">{{ form.send_email.help_text }}</p>
+                         {% endif %}
+                         {% if form.send_email.errors %}
+                             <div class="field-errors">
+                                 {% for error in form.send_email.errors %}
+                                     <span class="error-message">{{ error }}</span>
+                                 {% endfor %}
+                             </div>
+                         {% endif %}
+                     </div>
+                 </div>
+            
+                 <!-- 提交按钮 -->
+                 <div class="form-actions">
+                     <button type="submit" class="btn btn-primary" name="_save">
+                         <i class="icon-send"></i> 发送系统广播
+                     </button>
+                     <a href="{% url 'admin:notification_notification_changelist' %}" class="btn btn-secondary">
+                         <i class="icon-arrow-left"></i> 返回列表
+                     </a>
+                 </div>
+             </form>
+         </div>
+     </div>
+ </div>
+
+<style>
+/* 页面容器 */
+.broadcast-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* 页面标题 */
+.page-header {
+    text-align: center;
+    margin-bottom: 30px;
+    padding: 30px 0;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.page-header h1 {
+    margin: 0 0 10px 0;
+    font-size: 28px;
+    font-weight: 600;
+}
+
+.page-header .subtitle {
+    margin: 0;
+    font-size: 16px;
+    opacity: 0.9;
+}
+
+.page-header i {
+    margin-right: 10px;
+    font-size: 24px;
+}
+
+/* 消息提示 */
+.messages-container {
+    margin-bottom: 25px;
+}
+
+.message {
+    padding: 15px 20px;
+    margin-bottom: 10px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    font-weight: 500;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.message i {
+    margin-right: 12px;
+    font-size: 18px;
+}
+
+.message-success {
+    background: #d4edda;
+    color: #155724;
+    border-left: 4px solid #28a745;
+}
+
+.message-error {
+    background: #f8d7da;
+    color: #721c24;
+    border-left: 4px solid #dc3545;
+}
+
+.message-info {
+    background: #d1ecf1;
+    color: #0c5460;
+    border-left: 4px solid #17a2b8;
+}
+
+/* 表单卡片 */
+.broadcast-form-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    overflow: hidden;
+}
+
+/* 表单分组 */
+.form-section {
+    padding: 30px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.form-section:last-of-type {
+    border-bottom: none;
+}
+
+.section-title {
+    margin: 0 0 25px 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: #2c3e50;
+    display: flex;
+    align-items: center;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #e9ecef;
+}
+
+.section-title i {
+    margin-right: 10px;
+    color: #667eea;
+    font-size: 18px;
+}
+
+/* 表单网格 */
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 25px;
+    margin-bottom: 25px;
+}
+
+@media (max-width: 768px) {
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* 表单字段 */
+.form-field {
+    display: flex;
+    flex-direction: column;
+}
+
+.form-field.full-width {
+    grid-column: 1 / -1;
+    margin-bottom: 25px;
+}
+
+.form-field label {
+    font-weight: 600;
+    color: #34495e;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.form-field input,
+.form-field select,
+.form-field textarea,
+.form-field .form-select,
+.form-field .form-input,
+.form-field .form-textarea {
+    padding: 12px 16px;
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.3s ease;
+    background: #fafafa;
+    color: #495057;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus,
+.form-field .form-select:focus,
+.form-field .form-input:focus,
+.form-field .form-textarea:focus {
+    outline: none;
+    border-color: #667eea;
+    background: white;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.form-select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%23666" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px;
+    padding-right: 40px;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+}
+
+.form-select option {
+    color: #000000 !important;
+    background: #ffffff !important;
+}
+
+/* 修复Django表单渲染的select元素样式 */
+select {
+    color: #000000 !important;
+    background-color: #ffffff !important;
+}
+
+select option {
+    color: #000000 !important;
+    background-color: #ffffff !important;
+}
+
+.form-field textarea {
+    min-height: 120px;
+    resize: vertical;
+    font-family: inherit;
+}
+
+/* 复选框字段 */
+.checkbox-field {
+    margin-top: 20px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-weight: 500;
+    color: #34495e;
+}
+
+.checkbox-label input[type="checkbox"],
+.checkbox-label .form-checkbox {
+    margin-right: 10px;
+    transform: scale(1.2);
+    width: auto;
+    padding: 0;
+    border: none;
+    background: none;
+}
+
+.checkbox-text {
+    font-size: 14px;
+}
+
+/* 字段帮助文本 */
+.field-help {
+    margin: 8px 0 0 0;
+    font-size: 12px;
+    color: #6c757d;
+    font-style: italic;
+}
+
+/* 错误信息 */
+.field-errors {
+    margin-top: 8px;
+}
+
+.error-message {
+    display: block;
+    color: #dc3545;
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+/* 操作按钮 */
+.form-actions {
+    padding: 25px 30px;
+    background: #f8f9fa;
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+}
+
+.btn {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-width: 140px;
+    justify-content: center;
+}
+
+.btn i {
+    margin-right: 8px;
+    font-size: 16px;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+    transform: translateY(-1px);
+    color: white;
+    text-decoration: none;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .broadcast-container {
+        padding: 15px;
+    }
+    
+    .page-header {
+        padding: 20px 15px;
+    }
+    
+    .page-header h1 {
+        font-size: 24px;
+    }
+    
+    .form-section {
+        padding: 20px;
+    }
+    
+    .form-actions {
+        padding: 20px;
+        flex-direction: column;
+    }
+    
+    .btn {
+        width: 100%;
+    }
+}
+</style>
+{% endblock %}

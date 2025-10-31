@@ -44,5 +44,21 @@ env/
 .DS_Store
 Thumbs.db
 
+# Logs
+logs/
+*.log
+
+# Database
+*.sqlite3
+*.db
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Supervisor
+*.pid
+
 # user define
 *.zip
+cookies.txt

@@ -8,7 +8,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.db.models import Q
 
-from .models import Organization, OrganizationOperationLog, OrganizationConfig
+from .models import Organization, OrganizationOperationLog, OrganizationConfig, OrganizationJoinApplication
 from user.models import OrganizationUser
 from .serializers import (
     OrganizationSerializer, OrganizationMemberSerializer, OrganizationMemberUpdateSerializer,
@@ -28,11 +28,9 @@ from common_utils import APIResponse, format_validation_errors, build_media_url,
 logger = logging.getLogger(__name__)
 
 
-
-
-
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@authentication_classes([])
 def search_organizations(request):
     """搜索组织（支持分页）"""
     try:
@@ -821,10 +819,25 @@ def update_organization(request):
         old_data = {
             'name': organization.name,
             'leader_name': organization.leader_name,
+            'leader_title': organization.leader_title,
+            'enterprise_type': organization.enterprise_type,
+            'university_type': organization.university_type,
+            'other_type': organization.other_type,
+            'organization_nature': organization.organization_nature,
+            'business_scope': organization.business_scope,
+            'regulatory_authority': organization.regulatory_authority,
+            'service_target': organization.service_target,
+            'industry_or_discipline': organization.industry_or_discipline,
+            'scale': organization.scale,
+            'contact_person': organization.contact_person,
+            'contact_position': organization.contact_position,
             'contact_phone': organization.contact_phone,
             'contact_email': organization.contact_email,
             'address': organization.address,
+            'postal_code': organization.postal_code,
             'description': organization.description,
+            'website': organization.website,
+            'established_date': organization.established_date,
         }
         
         updated_organization = serializer.save()
@@ -835,6 +848,11 @@ def update_organization(request):
             old_value = old_data.get(field)
             new_value = getattr(updated_organization, field)
             if old_value != new_value:
+                # 处理日期对象的序列化
+                if hasattr(old_value, 'isoformat'):
+                    old_value = old_value.isoformat() if old_value else None
+                if hasattr(new_value, 'isoformat'):
+                    new_value = new_value.isoformat() if new_value else None
                 changes[field] = {'old': old_value, 'new': new_value}
         
         if changes:
@@ -1021,3 +1039,551 @@ def submit_verification_materials_with_images(request):
     except Exception as e:
         logger.error(f"提交认证材料失败: {str(e)}")
         return APIResponse.server_error('认证材料提交失败，请稍后重试')
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def university_list(request):
+    """获取高校列表接口（支持搜索和分页）"""
+    try:
+        from .models import University
+        from common_utils import paginate_queryset
+        
+        # 获取搜索参数
+        search = request.GET.get('search', '').strip()
+        
+        # 构建查询集
+        queryset = University.objects.all().order_by('school')
+        
+        # 应用搜索过滤
+        if search:
+            queryset = queryset.filter(
+                Q(school__icontains=search)
+            )
+        
+        # 分页处理
+        paginated_data = paginate_queryset(
+            request=request,
+            queryset=queryset,
+            default_page_size=20
+        )
+        
+        # 序列化数据
+        universities_data = []
+        for university in paginated_data['page_data']:
+            universities_data.append({
+                'id': university.id,
+                'school': university.school,
+                'created_at': university.created_at,
+                'updated_at': university.updated_at
+            })
+        
+        return APIResponse.success(
+            data={
+                'universities': universities_data,
+                'pagination': paginated_data['pagination_info']
+            },
+            message="高校列表获取成功"
+        )
+        
+    except Exception as e:
+        logger.error(f"获取高校列表失败: {str(e)}")
+        return APIResponse.server_error(
+            message="获取高校列表失败",
+            errors=str(e)
+        )
+
+
+# ==================== 企业用户组织切换功能 ====================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def leave_organization(request):
+    """用户退出当前组织"""
+    try:
+        user = request.user
+        
+        # 检查用户是否有组织关系
+        try:
+            org_user = OrganizationUser.objects.get(user=user)
+        except OrganizationUser.DoesNotExist:
+            return APIResponse.error("您当前没有加入任何组织", code=400)
+        
+        organization = org_user.organization
+        
+        # 检查是否为组织所有者
+        if org_user.permission == 'owner':
+            return APIResponse.error("组织所有者不能退出组织，请先转让所有权", code=403)
+        
+        # 使用事务确保数据一致性
+        with transaction.atomic():
+            # 记录操作日志
+            log_organization_operation(
+                operator=user,
+                organization=organization,
+                operation='member_leave',
+                target_user=user,
+                details={
+                    'user_id': user.id,
+                    'username': user.username,
+                    'organization_id': organization.id,
+                    'organization_name': organization.name,
+                    'permission': org_user.permission,
+                    'leave_time': org_user.updated_at.isoformat() if org_user.updated_at else None
+                },
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            
+            # 删除组织用户关系
+            org_user.delete()
+        
+        return APIResponse.success(
+            message=f"您已成功退出组织 {organization.name}",
+            data={
+                'organization_name': organization.name,
+                'leave_time': org_user.updated_at.isoformat() if org_user.updated_at else None
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"用户退出组织失败: {str(e)}")
+        return APIResponse.server_error("退出组织失败，请稍后重试")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def apply_join_organization(request):
+    """申请加入组织"""
+    try:
+        user = request.user
+        organization_id = request.data.get('organization_id')
+        application_reason = request.data.get('application_reason', '').strip()
+        
+        # 验证参数
+        if not organization_id:
+            return APIResponse.error("请选择要加入的组织", code=400)
+        
+        if not application_reason:
+            return APIResponse.error("请填写申请理由", code=400)
+        
+        if len(application_reason) < 10:
+            return APIResponse.error("申请理由至少需要10个字符", code=400)
+        
+        # 检查组织是否存在
+        try:
+            organization = Organization.objects.get(id=organization_id)
+        except Organization.DoesNotExist:
+            return APIResponse.error("目标组织不存在", code=404)
+        
+        # 检查组织状态
+        if organization.status != 'verified':
+            return APIResponse.error("只能申请加入已认证的组织", code=400)
+        
+        # 检查用户是否已有组织关系
+        if OrganizationUser.objects.filter(user=user).exists():
+            return APIResponse.error("您已加入其他组织，请先退出当前组织", code=400)
+        
+        # 检查是否已有待审核的申请
+        existing_application = OrganizationJoinApplication.objects.filter(
+            applicant=user,
+            organization=organization,
+            status='pending'
+        ).first()
+        
+        if existing_application:
+            return APIResponse.error("您已向该组织提交过申请，请等待审核结果", code=400)
+        
+        # 创建申请记录
+        with transaction.atomic():
+            application = OrganizationJoinApplication.objects.create(
+                applicant=user,
+                organization=organization,
+                application_reason=application_reason
+            )
+            
+            # 记录操作日志
+            log_organization_operation(
+                operator=user,
+                organization=organization,
+                operation='join_application_submit',
+                target_user=user,
+                details={
+                    'application_id': application.id,
+                    'applicant_id': user.id,
+                    'applicant_username': user.username,
+                    'organization_id': organization.id,
+                    'organization_name': organization.name,
+                    'application_reason': application_reason
+                },
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        
+        return APIResponse.success(
+            message=f"已成功提交加入 {organization.name} 的申请，请等待审核",
+            data={
+                'application_id': application.id,
+                'organization_name': organization.name,
+                'application_time': application.created_at.isoformat(),
+                'status': application.status
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"申请加入组织失败: {str(e)}")
+        return APIResponse.server_error("申请提交失败，请稍后重试")
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_join_applications(request):
+    """获取我的加入申请列表"""
+    try:
+        user = request.user
+        from common_utils import paginate_queryset
+        
+        # 获取查询参数
+        status_filter = request.GET.get('status', '')
+        
+        # 构建查询集
+        queryset = OrganizationJoinApplication.objects.filter(
+            applicant=user
+        ).select_related('organization', 'reviewer').order_by('-created_at')
+        
+        # 状态过滤
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        # 分页处理
+        paginated_data = paginate_queryset(
+            request=request,
+            queryset=queryset,
+            default_page_size=10
+        )
+        
+        # 序列化数据
+        applications_data = []
+        for application in paginated_data['page_data']:
+            app_data = {
+                'id': application.id,
+                'organization': {
+                    'id': application.organization.id,
+                    'name': application.organization.name,
+                    'organization_type': application.organization.organization_type,
+                    'logo': build_media_url(application.organization.logo, request) if application.organization.logo else None
+                },
+                'application_reason': application.application_reason,
+                'status': application.status,
+                'status_display': application.get_status_display(),
+                'created_at': application.created_at.isoformat(),
+                'updated_at': application.updated_at.isoformat()
+            }
+            
+            # 如果已审核，添加审核信息
+            if application.status in ['approved', 'rejected'] and application.reviewer:
+                app_data['review_info'] = {
+                    'reviewer': application.reviewer.username,
+                    'review_comment': application.review_comment,
+                    'reviewed_at': application.reviewed_at.isoformat() if application.reviewed_at else None
+                }
+            
+            applications_data.append(app_data)
+        
+        return APIResponse.success(
+            data={
+                'applications': applications_data,
+                'pagination': paginated_data['pagination_info']
+            },
+            message="申请列表获取成功"
+        )
+        
+    except Exception as e:
+        logger.error(f"获取申请列表失败: {str(e)}")
+        return APIResponse.server_error("获取申请列表失败，请稍后重试")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancel_join_application(request, application_id):
+    """取消加入申请"""
+    try:
+        user = request.user
+        
+        # 获取申请记录
+        try:
+            application = OrganizationJoinApplication.objects.get(
+                id=application_id,
+                applicant=user
+            )
+        except OrganizationJoinApplication.DoesNotExist:
+            return APIResponse.error("申请记录不存在", code=404)
+        
+        # 检查申请状态
+        if application.status != 'pending':
+            return APIResponse.error("只能取消待审核的申请", code=400)
+        
+        # 取消申请
+        with transaction.atomic():
+            application.cancel()
+            
+            # 记录操作日志
+            log_organization_operation(
+                operator=user,
+                organization=application.organization,
+                operation='join_application_cancel',
+                target_user=user,
+                details={
+                    'application_id': application.id,
+                    'applicant_id': user.id,
+                    'applicant_username': user.username,
+                    'organization_id': application.organization.id,
+                    'organization_name': application.organization.name
+                },
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        
+        return APIResponse.success(
+            message="申请已取消",
+            data={
+                'application_id': application.id,
+                'status': application.status
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"取消申请失败: {str(e)}")
+        return APIResponse.server_error("取消申请失败，请稍后重试")
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def organization_join_applications(request):
+    """获取组织的加入申请列表（管理员使用）"""
+    try:
+        user = request.user
+        from common_utils import paginate_queryset
+        
+        # 检查用户是否有组织关系
+        try:
+            org_user = OrganizationUser.objects.get(user=user)
+        except OrganizationUser.DoesNotExist:
+            return APIResponse.error("您没有加入任何组织", code=400)
+        
+        # 检查权限（只有管理员和所有者可以查看）
+        if org_user.permission not in ['admin', 'owner']:
+            return APIResponse.error("您没有权限查看申请列表", code=403)
+        
+        organization = org_user.organization
+        
+        # 获取查询参数
+        status_filter = request.GET.get('status', 'pending')  # 默认显示待审核的申请
+        
+        # 构建查询集
+        queryset = OrganizationJoinApplication.objects.filter(
+            organization=organization
+        ).select_related('applicant', 'reviewer').order_by('-created_at')
+        
+        # 状态过滤
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        # 分页处理
+        paginated_data = paginate_queryset(
+            request=request,
+            queryset=queryset,
+            default_page_size=10
+        )
+        
+        # 序列化数据
+        applications_data = []
+        for application in paginated_data['page_data']:
+            app_data = {
+                'id': application.id,
+                'applicant': {
+                    'id': application.applicant.id,
+                    'username': application.applicant.username,
+                    'real_name': application.applicant.real_name,
+                    'email': application.applicant.email,
+                    'avatar': build_media_url(application.applicant.avatar, request) if application.applicant.avatar else None
+                },
+                'application_reason': application.application_reason,
+                'status': application.status,
+                'status_display': application.get_status_display(),
+                'created_at': application.created_at.isoformat(),
+                'updated_at': application.updated_at.isoformat()
+            }
+            
+            # 如果已审核，添加审核信息
+            if application.status in ['approved', 'rejected'] and application.reviewer:
+                app_data['review_info'] = {
+                    'reviewer': application.reviewer.username,
+                    'review_comment': application.review_comment,
+                    'reviewed_at': application.reviewed_at.isoformat() if application.reviewed_at else None
+                }
+            
+            applications_data.append(app_data)
+        
+        return APIResponse.success(
+            data={
+                'applications': applications_data,
+                'pagination': paginated_data['pagination_info'],
+                'organization': {
+                    'id': organization.id,
+                    'name': organization.name
+                }
+            },
+            message="申请列表获取成功"
+        )
+        
+    except Exception as e:
+        logger.error(f"获取组织申请列表失败: {str(e)}")
+        return APIResponse.server_error("获取申请列表失败，请稍后重试")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def review_join_application(request, application_id):
+    """审核加入申请"""
+    try:
+        user = request.user
+        action = request.data.get('action')  # 'approve' 或 'reject'
+        review_comment = request.data.get('review_comment', '').strip()
+        
+        # 验证参数
+        if action not in ['approve', 'reject']:
+            return APIResponse.error("无效的审核操作", code=400)
+        
+        # 检查用户是否有组织关系
+        try:
+            org_user = OrganizationUser.objects.get(user=user)
+        except OrganizationUser.DoesNotExist:
+            return APIResponse.error("您没有加入任何组织", code=400)
+        
+        # 检查权限（只有管理员和所有者可以审核）
+        if org_user.permission not in ['admin', 'owner']:
+            return APIResponse.error("您没有权限审核申请", code=403)
+        
+        organization = org_user.organization
+        
+        # 获取申请记录
+        try:
+            application = OrganizationJoinApplication.objects.get(
+                id=application_id,
+                organization=organization
+            )
+        except OrganizationJoinApplication.DoesNotExist:
+            return APIResponse.error("申请记录不存在", code=404)
+        
+        # 检查申请状态
+        if application.status != 'pending':
+            return APIResponse.error("该申请已被处理", code=400)
+        
+        # 执行审核操作
+        with transaction.atomic():
+            if action == 'approve':
+                # 检查申请人是否已加入其他组织
+                if OrganizationUser.objects.filter(user=application.applicant).exists():
+                    return APIResponse.error("申请人已加入其他组织，无法批准", code=400)
+                
+                application.approve(user, review_comment)
+                operation = 'join_application_approve'
+                message = f"已批准 {application.applicant.username} 的加入申请"
+            else:
+                application.reject(user, review_comment)
+                operation = 'join_application_reject'
+                message = f"已拒绝 {application.applicant.username} 的加入申请"
+            
+            # 记录操作日志
+            log_organization_operation(
+                operator=user,
+                organization=organization,
+                operation=operation,
+                target_user=application.applicant,
+                details={
+                    'application_id': application.id,
+                    'applicant_id': application.applicant.id,
+                    'applicant_username': application.applicant.username,
+                    'reviewer_id': user.id,
+                    'reviewer_username': user.username,
+                    'action': action,
+                    'review_comment': review_comment
+                },
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        
+        return APIResponse.success(
+            message=message,
+            data={
+                'application_id': application.id,
+                'status': application.status,
+                'action': action,
+                'review_comment': review_comment,
+                'reviewed_at': application.reviewed_at.isoformat() if application.reviewed_at else None
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"审核申请失败: {str(e)}")
+        return APIResponse.server_error("审核申请失败，请稍后重试")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def join_organization_by_invitation(request):
+    """通过邀请码加入组织（免审核）"""
+    try:
+        user = request.user
+        invitation_code = request.data.get('invitation_code', '').strip()
+        
+        # 验证参数
+        if not invitation_code:
+            return APIResponse.error("请输入邀请码", code=400)
+        
+        # 检查用户是否已有组织关系
+        if OrganizationUser.objects.filter(user=user).exists():
+            return APIResponse.error("您已加入其他组织，请先退出当前组织", code=400)
+        
+        # 使用邀请码
+        from authentication.invitation_utils import use_invitation_code
+        success, organization, message = use_invitation_code(invitation_code, user)
+        
+        if not success:
+            return APIResponse.error(message, code=400)
+        
+        # 记录操作日志
+        log_organization_operation(
+            operator=user,
+            organization=organization,
+            operation='invitation_code_join',
+            target_user=user,
+            details={
+                'user_id': user.id,
+                'username': user.username,
+                'organization_id': organization.id,
+                'organization_name': organization.name,
+                'invitation_code': invitation_code
+            },
+            ip_address=request.META.get('REMOTE_ADDR'),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+        
+        return APIResponse.success(
+            message=f"成功加入组织 {organization.name}",
+            data={
+                'organization': {
+                    'id': organization.id,
+                    'name': organization.name,
+                    'organization_type': organization.organization_type,
+                    'logo': build_media_url(organization.logo, request) if organization.logo else None
+                },
+                'join_time': user.organization_profile.created_at.isoformat() if hasattr(user, 'organization_profile') else None
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"通过邀请码加入组织失败: {str(e)}")
+        return APIResponse.server_error("加入组织失败，请稍后重试")

@@ -13,7 +13,7 @@ class StudentBasicFieldsMixin(serializers.Serializer):
     real_name = serializers.CharField(source='user.real_name', read_only=True)
     username = serializers.CharField(source='user.username', read_only=True)
     avatar = serializers.SerializerMethodField()
-
+    
     def get_avatar(self, obj):
         """获取头像URL"""
         if hasattr(obj, 'user') and obj.user and obj.user.avatar:
@@ -26,12 +26,12 @@ class ReviewMixin(serializers.Serializer):
     """审核相关字段 Mixin"""
     action = serializers.ChoiceField(choices=['approve', 'reject'])
     review_message = serializers.CharField(
-        max_length=500,
-        required=False,
+        max_length=500, 
+        required=False, 
         allow_blank=True,
         help_text="审核消息，如果不提供将使用默认消息"
     )
-
+    
     def validate_action(self, value):
         """验证审核动作"""
         if value not in ['approve', 'reject']:
@@ -58,25 +58,25 @@ class CloudLinkMixin(serializers.Serializer):
         default="/",
         help_text="虚拟文件夹路径，文件将上传到此路径下"
     )
-
+    
     def validate_cloud_links(self, value):
         """验证网盘链接格式"""
         if value:
             # 简单的URL格式验证
             if not (value.startswith('http://') or value.startswith('https://')):
                 raise serializers.ValidationError("网盘链接必须是有效的URL格式")
-
+            
             # 检查是否为常见网盘链接
             valid_domains = ['pan.baidu.com', 'cloud.189.cn', 'pan.xunlei.com', 'drive.google.com']
             if not any(domain in value for domain in valid_domains):
                 raise serializers.ValidationError("请提供有效的网盘链接")
-
+        
         return value
 
 
 class AuthorInfoMixin:
     """作者信息处理 Mixin"""
-
+    
     def get_author_info(self, obj):
         """获取作者信息"""
         if hasattr(obj, 'author') and obj.author:
@@ -97,7 +97,7 @@ class AuthorInfoMixin:
                     'avatar': self._get_avatar_url(obj.author)
                 }
         return None
-
+    
     def _get_avatar_url(self, user):
         """获取头像URL"""
         if user and user.avatar:
@@ -108,7 +108,7 @@ class AuthorInfoMixin:
 
 class AvatarMixin:
     """提供头像URL获取功能的Mixin类"""
-
+    
     def get_avatar(self, obj):
         """获取用户头像URL"""
         if hasattr(obj, 'avatar') and obj.avatar:
@@ -122,22 +122,22 @@ class AvatarMixin:
 
 class FilesMixin:
     """提供文件列表获取功能的Mixin类"""
-
+    
     def get_files(self, obj):
         """获取项目成果文件列表"""
         if hasattr(obj, 'files'):
             return [{
                 'id': file.id,
                 'name': file.name,
-                'file_url': file.file.url if file.file else None,
-                'uploaded_at': file.uploaded_at
+                'file_url': file.url if file.url else None,
+                'uploaded_at': file.created_at
             } for file in obj.files.all()]
         return []
 
 
 class LeaderMixin:
     """提供项目负责人信息获取功能的Mixin类"""
-
+    
     def get_leader(self, obj):
         """获取项目负责人信息"""
         if hasattr(obj, 'leader') and obj.leader:
@@ -154,10 +154,10 @@ class LeaderMixin:
 
 class ContactMixin:
     """提供联系方式脱敏功能的Mixin类"""
-
-    def get_masked_email(self, obj):
+    
+    def get_email(self, obj):
         """获取脱敏邮箱"""
-        email = getattr(obj, 'email', None)
+        email = getattr(obj.user, 'email', None) if hasattr(obj, 'user') else getattr(obj, 'email', None)
         if email:
             parts = email.split('@')
             if len(parts) == 2:
@@ -168,10 +168,18 @@ class ContactMixin:
                     masked_username = username[0] + '*' * (len(username) - 1)
                 return f"{masked_username}@{domain}"
         return email
-
-    def get_masked_phone(self, obj):
+    
+    def get_phone(self, obj):
         """获取脱敏手机号"""
-        phone = getattr(obj, 'phone', None)
+        phone = getattr(obj.user, 'phone', None) if hasattr(obj, 'user') else getattr(obj, 'phone', None)
         if phone and len(phone) >= 7:
             return phone[:3] + '*' * 4 + phone[-4:]
         return phone
+    
+    def get_masked_email(self, obj):
+        """获取脱敏邮箱（向后兼容）"""
+        return self.get_email(obj)
+    
+    def get_masked_phone(self, obj):
+        """获取脱敏手机号（向后兼容）"""
+        return self.get_phone(obj)

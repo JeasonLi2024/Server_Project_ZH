@@ -22,8 +22,12 @@ class ProjectRelatedMixin:
                 project_participants = [{
                     'id': participant.student.id,
                     'username': participant.student.user.username,
-                    'school': participant.student.school,
+                    'school': {
+                        'id': participant.student.school.id,
+                        'name': participant.student.school.school
+                    } if participant.student.school else None,
                     'role': participant.role,
+                    'avatar': build_media_url(participant.student.user.avatar, self.context.get('request')) if participant.student.user.avatar else None,
                 } for participant in participants]
 
                 result.append({
@@ -34,7 +38,11 @@ class ProjectRelatedMixin:
                     'leader': {
                         'id': project.get_leader().id,
                         'username': project.get_leader().user.username,
-                        'school': project.get_leader().school
+                        'school': {
+                            'id': project.get_leader().school.id,
+                            'name': project.get_leader().school.school
+                        } if project.get_leader().school else None,
+                        'avatar': build_media_url(project.get_leader().user.avatar, self.context.get('request')) if project.get_leader().user.avatar else None,
                     } if project.get_leader() else None,
                     'participants': project_participants,
                 })
@@ -189,10 +197,12 @@ class FileHandlingMixin:
     def _handle_file_upload(self, instance, uploaded_files, virtual_folder_path="/", maintain_structure=False):
         """处理文件上传"""
         if not uploaded_files:
-            return
+            return []
 
         # 确保虚拟文件夹存在
         self._ensure_virtual_folder_exists(virtual_folder_path)
+        
+        created_file_ids = []
 
         for uploaded_file in uploaded_files:
             # 生成唯一文件名
@@ -207,28 +217,34 @@ class FileHandlingMixin:
             # 保存文件
             saved_path = default_storage.save(file_path, uploaded_file)
 
+            # 构建文件URL
+            from common_utils import build_media_url
+            file_url = build_media_url(saved_path)
+            
             # 创建文件记录
             file_obj = File.objects.create(
                 name=uploaded_file.name,
-                file=saved_path,
-                virtual_folder_path=virtual_folder_path,
+                url=file_url or '',
+                real_path=saved_path,
+                parent_path=virtual_folder_path,
+                size=uploaded_file.size,
                 is_cloud_link=False
             )
 
-            # 关联文件到实例
-            if hasattr(instance, 'requirement'):
-                file_obj.requirement = instance
-            else:
-                file_obj.resource = instance
-            file_obj.save()
+            # 将文件ID添加到列表中，稍后通过多对多关系关联
+            created_file_ids.append(file_obj.id)
+            
+        return created_file_ids
 
     def _handle_cloud_links(self, instance, cloud_links_data, virtual_folder_path="/"):
         """处理网盘链接"""
         if not cloud_links_data:
-            return
+            return []
 
         # 确保虚拟文件夹存在
         self._ensure_virtual_folder_exists(virtual_folder_path)
+        
+        created_file_ids = []
 
         for link_data in cloud_links_data:
             url = link_data.get('url', '').strip()
@@ -244,18 +260,16 @@ class FileHandlingMixin:
             # 创建文件记录
             file_obj = File.objects.create(
                 name=filename,
-                cloud_link_url=url,
+                url=url,
                 cloud_password=password,
-                virtual_folder_path=path,
+                parent_path=path,
                 is_cloud_link=True
             )
 
-            # 关联文件到实例
-            if hasattr(instance, 'requirement'):
-                file_obj.requirement = instance
-            else:
-                file_obj.resource = instance
-            file_obj.save()
+            # 将文件ID添加到列表中，稍后通过多对多关系关联
+            created_file_ids.append(file_obj.id)
+            
+        return created_file_ids
 
     def _ensure_virtual_folder_exists(self, folder_path):
         """确保虚拟文件夹路径存在"""
@@ -292,7 +306,7 @@ class FileHandlingMixin:
         # 处理文件关联
         files_ids = relations_data.get('files_ids', [])
         if files_ids:
-            File.objects.filter(id__in=files_ids).update(
-                requirement=instance if hasattr(instance, 'requirement') else None,
-                resource=instance if hasattr(instance, 'resource') else None
-            )
+            # 使用多对多关系设置文件关联
+            instance.files.set(files_ids)
+        elif is_update:
+            instance.files.clear()

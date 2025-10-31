@@ -48,6 +48,9 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
+    "channels",
+    "django_filters", 
+    "django_celery_beat",
     # Local apps
     "user",
     "authentication",
@@ -58,6 +61,10 @@ INSTALLED_APPS = [
     "studentproject",
     "projectscore",
     "read_search",
+    "notification",
+    "dashboard",
+    "audit",
+    "cas_auth",
 ]
 
 MIDDLEWARE = [
@@ -91,6 +98,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "Project_Zhihui.wsgi.application"
+ASGI_APPLICATION = "Project_Zhihui.asgi.application"
 
 
 # Database
@@ -99,15 +107,21 @@ WSGI_APPLICATION = "Project_Zhihui.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",
-        "NAME": os.getenv("DB_NAME", "project_zhihui"),
-        "USER": os.getenv("DB_USER", "root"),
+        "NAME": os.getenv("DB_NAME"),
+        "USER": os.getenv("DB_USER"),
         "PASSWORD": os.getenv("DB_PASSWORD", ""),
         "HOST": os.getenv("DB_HOST", "localhost"),
         "PORT": os.getenv("DB_PORT", "3306"),
         "OPTIONS": {
             "charset": "utf8mb4",
-            "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
+            "init_command": (
+                "SET sql_mode='STRICT_TRANS_TABLES', "
+                "innodb_lock_wait_timeout=10"
+            ),
         },
+        "CONN_MAX_AGE": 600,  # 连接复用时间（秒）
+        "CONN_HEALTH_CHECKS": True,  # 启用连接健康检查
+        "ATOMIC_REQUESTS": False,  # 避免不必要的事务包装
     }
 }
 
@@ -239,6 +253,16 @@ CACHES = {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
     }
+}
+
+# Channels Configuration
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [os.getenv("REDIS_URL", "redis://127.0.0.1:6379/4")],
+        },
+    },
 }
 
 # 验证码存储配置
@@ -383,6 +407,16 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        'notification': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'cas_auth': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
     },
 }
 
@@ -390,6 +424,27 @@ LOGGING = {
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
+
+# ===== CAS Authentication Settings =====
+# CAS认证配置
+BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'False').lower() == 'true'
+BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://localhost:8000/api/cas/callback/')
+BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
+
+# 前端URL配置（用于CAS登出后重定向）
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+
+# CAS相关设置
+CAS_SETTINGS = {
+    'ENABLED': BUPT_CAS_ENABLED,
+    'SERVER_URL': BUPT_CAS_SERVER_URL,
+    'SERVICE_URL': BUPT_CAS_SERVICE_URL,
+    'VERSION': BUPT_CAS_VERSION,
+    'FRONTEND_URL': FRONTEND_URL,
+    'TIMEOUT': int(os.getenv('CAS_TIMEOUT', '30')),  # CAS请求超时时间（秒）
+    'VERIFY_SSL': os.getenv('CAS_VERIFY_SSL', 'True').lower() == 'true',  # 是否验证SSL证书
+}
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = True

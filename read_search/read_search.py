@@ -86,7 +86,7 @@ def search_in_milvus(Query, Pids, top_k=5):
         param={"metric_type": "COSINE", "params": {"nprobe": 10}},
         limit=top_k,
         expr=expr,  # 这里添加过滤条件
-        output_fields=["chunk_number", "text"]
+        output_fields=["chunk_number", "text", "Pid"]
     )
     # 合并所有搜索结果
     print(f"[DEBUG] Milvus搜索返回 {len(results)} 个结果集")
@@ -98,8 +98,9 @@ def search_in_milvus(Query, Pids, top_k=5):
         for hit in result_set:
             hit_id = hit.entity.get("chunk_number")
             content = hit.entity.get("text")
+            pid = hit.entity.get("Pid")
             score = hit.score
-            print(f"[DEBUG] 找到结果: id={hit_id}, content_len={len(content) if content else 0}, score={score}")
+            print(f"[DEBUG] 找到结果: id={hit_id}, content_len={len(content) if content else 0}, pid={pid}, score={score}")
             
             # 避免重复结果
             if hit_id not in seen_ids:
@@ -107,6 +108,7 @@ def search_in_milvus(Query, Pids, top_k=5):
                 output.append({
                     "id_chunk": hit_id,  # 将原来的 id 字段改为 id_chunk
                     "content": content,
+                    "pid": pid,
                     "score": score
                 })
     

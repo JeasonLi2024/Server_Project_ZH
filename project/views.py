@@ -1,5 +1,6 @@
 import logging
 import pytz
+import os
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import F, Q, Count, Sum, Case, When, IntegerField
@@ -140,6 +141,7 @@ def create_requirement(request):
     
     创建新的需求记录，支持设置标题、描述、领域、标签、关联资源等信息。
     只要是企业用户（组织成员）即可发布需求。
+    如果上传的文件中包含PDF文件，会自动调用PDF处理服务进行向量化存储。
     
     请求参数:
     - title: 需求标题 (必填)
@@ -171,6 +173,16 @@ def create_requirement(request):
         with transaction.atomic():
             requirement = serializer.save()
             
+            # 检查是否有PDF文件需要处理
+            pdf_files = []
+            for file_obj in requirement.files.all():
+                if not file_obj.is_folder and file_obj.name.lower().endswith('.pdf'):
+                    pdf_files.append(file_obj)
+            
+            # 如果有PDF文件，调用PDF处理服务
+            if pdf_files:
+                _process_requirement_pdfs(requirement.id, pdf_files)
+            
             # 使用详情序列化器返回完整信息
             detail_serializer = RequirementSerializer(
                 requirement, 
@@ -189,6 +201,47 @@ def create_requirement(request):
             '发布需求失败，请稍后重试',
             errors={'exception': str(e)}
         )
+def _process_requirement_pdfs(requirement_id, pdf_files):
+    """
+    处理需求相关的PDF文件，直接调用PDF处理函数进行向量化存储
+    
+    参数:
+    - requirement_id: 需求ID，作为PDF处理的pid参数
+    - pdf_files: PDF文件对象列表
+    """
+    try:
+        # 导入PDF处理函数
+        from process_pdf.pdf_chunk_milvus import process_pdf
+        
+        for pdf_file in pdf_files:
+            try:
+                # 检查文件是否有实际存储路径
+                if not pdf_file.real_path:
+                    logger.warning(f"PDF文件 {pdf_file.name} 的实际路径为空，跳过处理")
+                    continue
+                
+                # 构建完整的文件路径
+                from django.conf import settings
+                full_file_path = os.path.join(settings.MEDIA_ROOT, pdf_file.real_path)
+                
+                if not os.path.exists(full_file_path):
+                    logger.warning(f"PDF文件 {pdf_file.name} 的实际路径不存在: {full_file_path}，跳过处理")
+                    continue
+                
+                # 直接调用PDF处理函数
+                result = process_pdf(full_file_path, requirement_id)
+                
+                if result.get('status') == 'success':
+                    logger.info(f"PDF文件 {pdf_file.name} 处理成功，需求ID: {requirement_id}，分块数: {result.get('chunks', 0)}")
+                else:
+                    logger.error(f"PDF文件 {pdf_file.name} 处理失败: {result.get('error', '未知错误')}")
+                        
+            except Exception as file_error:
+                logger.error(f"处理PDF文件 {pdf_file.name} 时发生错误: {str(file_error)}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"批量处理PDF文件时发生错误: {str(e)}")
 
 
 @api_view(['PUT', 'PATCH'])
@@ -245,7 +298,21 @@ def update_requirement(request, requirement_id):
         # 使用PATCH方法支持部分更新
         partial = request.method == 'PATCH'
         
-        # 更新需求 - 使用悲观锁防止并发修改
+        # 先进行数据验证，减少锁定时间
+        temp_serializer = RequirementUpdateSerializer(
+            requirement,
+            data=request.data,
+            partial=partial,
+            context={'request': request}
+        )
+        
+        if not temp_serializer.is_valid():
+            return APIResponse.validation_error(
+                errors=format_validation_errors(temp_serializer.errors),
+                message="数据验证失败"
+            )
+        
+        # 只在保存时使用悲观锁，缩短事务范围
         with transaction.atomic():
             # 锁定需求记录
             requirement = get_object_or_404(
@@ -253,6 +320,7 @@ def update_requirement(request, requirement_id):
                 id=requirement_id
             )
             
+            # 重新创建序列化器进行保存
             serializer = RequirementUpdateSerializer(
                 requirement,
                 data=request.data,
@@ -260,10 +328,14 @@ def update_requirement(request, requirement_id):
                 context={'request': request}
             )
             
+            # 由于之前已经验证过，这里应该不会失败
             if not serializer.is_valid():
                 raise ValueError(format_validation_errors(serializer.errors))
             
             updated_requirement = serializer.save()
+            
+            # 刷新实例以获取最新的数据库状态
+            updated_requirement.refresh_from_db()
             
             # 使用详情序列化器返回完整信息
             detail_serializer = RequirementSerializer(
@@ -634,11 +706,26 @@ def list_requirements(request):
         page_data = pagination_result['page_data']
         pagination_info = pagination_result['pagination_info']
         
+        # 预取收藏状态数据，避免N+1查询
+        favorited_requirements = set()
+        if request.user.is_authenticated and hasattr(request.user, 'student_profile'):
+            from .models import RequirementFavorite
+            requirement_ids = [req.id for req in page_data]
+            favorited_requirements = set(
+                RequirementFavorite.objects.filter(
+                    student=request.user.student_profile,
+                    requirement_id__in=requirement_ids
+                ).values_list('requirement_id', flat=True)
+            )
+        
         # 序列化
         serializer = RequirementSerializer(
             page_data,
             many=True,
-            context={'request': request}
+            context={
+                'request': request,
+                'favorited_requirements': favorited_requirements
+            }
         )
         
         return APIResponse.success({
@@ -781,41 +868,52 @@ def update_resource(request, resource_id):
     文件修改需要使用虚拟文件管理接口
     """
     try:
-        # 使用悲观锁获取资源
+        # 先获取资源进行权限检查（不加锁）
+        resource = get_object_or_404(Resource, id=resource_id)
+        
+        # 权限检查
+        if not _check_resource_permission(request.user, resource, 'update'):
+            return APIResponse.forbidden(
+                message="只有资源创建者、组织所有者或管理员可以修改资源"
+            )
+        
+        # 数据验证
+        serializer = ResourceUpdateSerializer(
+            resource, 
+            data=request.data, 
+            partial=True,
+            context={'request': request}
+        )
+        
+        if not serializer.is_valid():
+            return APIResponse.error(
+                message="数据验证失败",
+                code=400,
+                errors=serializer.errors
+            )
+        
+        # 只在实际更新时使用悲观锁，缩短事务范围
         with transaction.atomic():
             resource = get_object_or_404(
                 Resource.objects.select_for_update(), 
                 id=resource_id
             )
             
-            # 权限检查
+            # 重新验证权限（防止在验证期间权限发生变化）
             if not _check_resource_permission(request.user, resource, 'update'):
                 return APIResponse.forbidden(
                     message="只有资源创建者、组织所有者或管理员可以修改资源"
                 )
             
-            serializer = ResourceUpdateSerializer(
-                resource, 
-                data=request.data, 
-                partial=True,
-                context={'request': request}
-            )
+            # 使用已验证的数据进行更新
+            updated_resource = serializer.save()
             
-            if serializer.is_valid():
-                updated_resource = serializer.save()
-                
-                # 返回更新后的资源信息
-                response_serializer = ResourceSerializer(updated_resource)
-                return APIResponse.success(
-                    data=response_serializer.data,
-                    message="资源更新成功"
-                )
-            else:
-                return APIResponse.error(
-                    message="数据验证失败",
-                    code=400,
-                    errors=serializer.errors
-                )
+            # 返回更新后的资源信息
+            response_serializer = ResourceSerializer(updated_resource)
+            return APIResponse.success(
+                data=response_serializer.data,
+                message="资源更新成功"
+            )
     
     except Resource.DoesNotExist:
         return APIResponse.not_found(
