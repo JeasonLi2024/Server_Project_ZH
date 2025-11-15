@@ -31,7 +31,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure--)i3x_fg)a$$d24)13hq=ydp(f
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,*.ngrok.io,151af97252e4.ngrok-free.app").split(",")
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,*.ngrok.io,151af97252e4.ngrok-free.app,llm.bupt.edu.cn").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "https://llm.bupt.edu.cn").split(",")
 
 
 # Application definition
@@ -424,16 +425,18 @@ LOGGING = {
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # ===== CAS Authentication Settings =====
 # CAS认证配置
-BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'False').lower() == 'true'
+BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'True').lower() == 'true'
 BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
-BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://localhost:8000/api/cas/callback/')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'https://llm.bupt.edu.cn/rch/api/v1/cas/callback/')
 BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
 
 # 前端URL配置（用于CAS登出后重定向）
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://llm.bupt.edu.cn')
 
 # CAS相关设置
 CAS_SETTINGS = {
