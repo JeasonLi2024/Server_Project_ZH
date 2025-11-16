@@ -2,17 +2,24 @@
 
 ## 概述
 
-CAS（Central Authentication Service）统一认证系统提供了完整的单点登录（SSO）解决方案，支持与北京邮电大学统一认证平台的集成。系统实现了CAS 2.0和CAS 3.0协议标准，提供用户身份验证、票据验证、用户信息同步等功能，并能够自动区分学生和教师身份，将用户信息存储到相应的数据表中。
+CAS（Central Authentication Service）统一认证系统提供单点登录（SSO）能力，当前项目已集成北京邮电大学统一认证平台，支持 CAS 2.0/3.0。后端路由保持 `/api/v1` 前缀不变；外部通过反向代理挂载到 `https://llm.bupt.edu.cn/rch/`，因此前端对外调用路径为 `/rch/api/v1/...`。该文档说明各接口的使用时机与前端调用方式。
 
-## 接口列表
+## 总体流程（前端视角）
+- 未登录访问受保护页面 → 调用“获取登录地址”接口 → 跳转到统一认证登录页
+- 登录成功后统一认证回调到“回调接口”并携带 `ticket`
+- 后端校验 `ticket`，同步/创建用户并签发 `JWT`（access/refresh）
+- 前端存储令牌并进入应用；需要登出时调用“登出接口”，后端黑名单化令牌并返回统一认证登出地址，前端跳转
 
-### 1. CAS登录入口接口
+## 接口列表与使用时机
 
-**接口地址：** `GET /api/cas/login/`
+### 1. 获取登录地址
+
+**对外地址：** `GET /rch/api/v1/cas/login/`
+**后端路由：** `GET /api/v1/cas/login/`
 
 **功能描述：** 获取CAS登录URL，用于重定向用户到CAS认证服务器进行身份验证
 
-**权限要求：** 
+**权限要求：**
 - 无需用户登录认证
 - 公开访问接口
 
@@ -27,27 +34,28 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
   "code": 200,
   "message": "请重定向到CAS登录页面",
   "data": {
-    "login_url": "https://auth.bupt.edu.cn/authserver/login?service=http%3A//localhost%3A8000/api/cas/callback/",
-    "service_url": "http://localhost:8000/api/cas/callback/"
+    "login_url": "https://auth.bupt.edu.cn/authserver/login?service=https%3A//llm.bupt.edu.cn/rch/api/v1/cas/callback/",
+    "service_url": "https://llm.bupt.edu.cn/rch/api/v1/cas/callback/"
   }
 }
 ```
 
-### 2. CAS认证回调处理接口
+### 2. 认证回调（前端发起验证）
 
-**接口地址：** `GET /api/cas/callback/`
+**对外地址：** `GET /rch/api/v1/cas/callback/`
+**后端路由：** `GET /api/v1/cas/callback/`
 
-**功能描述：** 处理CAS认证服务器的回调请求，验证票据并完成用户登录
+**功能描述：** 统一认证登录成功后会重定向到前端登录页（作为 `service`）；前端读取 URL 中的 `ticket`，并调用该接口进行票据验证与登录。
 
-**权限要求：** 
+**权限要求：**
 - 无需用户登录认证
-- 由CAS服务器回调访问
+- 前端调用访问（携带 `ticket` 与与登录阶段一致的 `service`）
 
 **查询参数：**
 | 参数名 | 类型 | 必填 | 描述 |
 |--------|------|------|------|
 | ticket | string | 是 | CAS服务器颁发的认证票据 |
-| service | string | 否 | 服务URL，用于票据验证 |
+| service | string | 是 | 前端登录页完整地址（必须与登录阶段一致） |
 
 **响应格式：**
 ```json
@@ -87,13 +95,14 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
 }
 ```
 
-### 3. CAS登出接口
+### 3. 统一登出
 
-**接口地址：** `GET /api/cas/logout/` 或 `POST /api/cas/logout/`
+**对外地址：** `GET /rch/api/v1/cas/logout/` 或 `POST /rch/api/v1/cas/logout/`
+**后端路由：** `GET/POST /api/v1/cas/logout/`
 
 **功能描述：** 获取CAS登出URL，用于重定向用户到CAS服务器完成全局登出。同时会自动黑名单化用户的JWT token以确保安全登出。
 
-**权限要求：** 
+**权限要求：**
 - 无需用户登录认证
 - 公开访问接口
 
@@ -137,9 +146,10 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
 3. 前端重定向用户到返回的logout_url
 4. 用户在CAS服务器完成登出后，会被重定向到service_url
 
-### 4. CAS配置状态查询接口
+### 4. 配置与状态查询
 
-**接口地址：** `GET /api/cas/status/`
+**对外地址：** `GET /rch/api/v1/cas/status/`
+**后端路由：** `GET /api/v1/cas/status/`
 
 **功能描述：** 获取CAS系统的配置状态和当前用户的CAS认证信息
 
@@ -166,9 +176,10 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
 }
 ```
 
-### 5. 用户CAS认证信息查询接口
+### 5. 当前用户 CAS 信息
 
-**接口地址：** `GET /api/cas/user-info/`
+**对外地址：** `GET /rch/api/v1/cas/user-info/`
+**后端路由：** `GET /api/v1/cas/user-info/`
 
 **功能描述：** 获取当前登录用户的CAS认证详细信息和最近的认证日志
 
@@ -245,10 +256,10 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
 
 ### 1. 首次登录流程
 
-1. **前端发起登录**：调用 `/api/cas/login/` 获取CAS登录URL
+1. **前端发起登录**：调用 `/rch/api/v1/cas/login/` 获取CAS登录URL
 2. **重定向到CAS**：前端将用户重定向到CAS认证服务器
 3. **用户认证**：用户在CAS服务器完成身份验证
-4. **CAS回调**：CAS服务器重定向到 `/api/cas/callback/` 并携带ticket
+4. **CAS回调**：CAS服务器重定向到 `/rch/api/v1/cas/callback/` 并携带ticket
 5. **票据验证**：后端验证ticket并获取用户信息
 6. **用户同步**：根据CAS返回的信息创建或更新用户数据
 7. **返回令牌**：返回JWT访问令牌给前端
@@ -298,11 +309,11 @@ CAS（Central Authentication Service）统一认证系统提供了完整的单�
 
 ## 使用示例
 
-### 1. 前端集成CAS登录
+### 1. 前端集成CAS登录（对外路径）
 
 ```javascript
 // 获取CAS登录URL
-const response = await fetch('/api/cas/login/');
+const response = await fetch('/rch/api/v1/cas/login/');
 const data = await response.json();
 
 if (data.code === 200) {
@@ -311,7 +322,7 @@ if (data.code === 200) {
 }
 ```
 
-### 2. 处理CAS回调
+### 2. 处理CAS回调（对外路径）
 
 ```javascript
 // CAS回调页面处理
@@ -321,7 +332,7 @@ const ticket = urlParams.get('ticket');
 if (ticket) {
     // 后端会自动处理ticket验证和用户登录
     // 前端只需要从回调中获取认证结果
-    const response = await fetch(`/api/cas/callback/${window.location.search}`);
+const response = await fetch(`/rch/api/v1/cas/callback/${window.location.search}`);
     const data = await response.json();
     
     if (data.code === 200) {
@@ -335,11 +346,11 @@ if (ticket) {
 }
 ```
 
-### 3. CAS登出
+### 3. CAS登出（对外路径）
 
 ```javascript
 // 获取CAS登出URL
-const response = await fetch('/api/cas/logout/');
+const response = await fetch('/rch/api/v1/cas/logout/');
 const data = await response.json();
 
 if (data.code === 200) {
@@ -352,19 +363,19 @@ if (data.code === 200) {
 }
 ```
 
-### 4. 检查CAS状态
+### 4. 检查CAS状态（对外路径）
 
 ```bash
 # 检查CAS配置状态
-curl -X GET 'http://localhost:8000/api/cas/status/' \
+curl -X GET 'https://llm.bupt.edu.cn/rch/api/v1/cas/status/' \
   -H 'Content-Type: application/json'
 ```
 
-### 5. 获取用户CAS信息
+### 5. 获取用户CAS信息（对外路径）
 
 ```bash
 # 获取当前用户的CAS认证信息
-curl -X GET 'http://localhost:8000/api/cas/user-info/' \
+curl -X GET 'https://llm.bupt.edu.cn/rch/api/v1/cas/user-info/' \
   -H 'Authorization: Bearer your_access_token'
 ```
 

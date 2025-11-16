@@ -432,7 +432,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # CAS认证配置
 BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'True').lower() == 'true'
 BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
-BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'https://llm.bupt.edu.cn/rch/api/v1/cas/callback/')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://localhost:5173/login')
 BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
 
 # 前端URL配置（用于CAS登出后重定向）
