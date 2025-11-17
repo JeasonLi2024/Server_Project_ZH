@@ -24,6 +24,9 @@ from .utils import (
 from .verification_utils import (
     send_verification_code, validate_email_code, verify_email_code
 )
+from .phone_verification import (
+    send_phone_verification_code, validate_phone_code
+)
 from .serializers import (
     EmailCodeSerializer, RegisterSerializer, LoginSerializer,
     PasswordChangeSerializer, PasswordResetRequestSerializer,
@@ -31,7 +34,7 @@ from .serializers import (
     LogoutSerializer, LoginLogSerializer, EmailCodeValidationSerializer, 
     UserExistsCheckSerializer, ChangeEmailSerializer,
     AccountDeletionRequestSerializer, AccountDeletionLogSerializer,
-    AccountDeletionCancelSerializer
+    AccountDeletionCancelSerializer, PhoneCodeSerializer
 )
 from common_utils import APIResponse, format_validation_errors
 
@@ -227,6 +230,31 @@ def login(request):
         # 记录登录成功日志
         create_login_log(user, request, 'email_verification', True)
     
+    elif login_type == 'phone-verification':
+        # 手机验证码登录
+        phone = serializer.validated_data['phone']
+        phone_code = serializer.validated_data['phone_code']
+        
+        # 查找用户
+        try:
+            user = User.objects.get(phone=phone)
+        except User.DoesNotExist:
+            return APIResponse.error('验证失败', 422, {'phone': ['用户不存在']})
+        
+        # 检查用户状态
+        if not user.is_active:
+            create_login_log(user, request, 'phone_code', False, '账户已禁用')
+            return APIResponse.error('验证失败', 422, {'phone': ['账户已被禁用']})
+        
+        # 校验验证码
+        ok, msg = validate_phone_code(phone, phone_code, 'login')
+        if not ok:
+            create_login_log(user, request, 'phone_code', False, f'验证码{msg}')
+            return APIResponse.error('验证失败', 422, {'phone_code': [f'验证码{msg}']})
+        
+        # 记录登录成功日志
+        create_login_log(user, request, 'phone_code', True)
+    
     else:
         return APIResponse.error('验证失败', 422, {'type': ['不支持的登录类型']})
     
@@ -372,6 +400,52 @@ def refresh(request):
         return APIResponse.error('验证失败', 422, {'refresh_token': ['刷新令牌无效']})
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def send_phone_code(request):
+    """发送短信验证码"""
+    serializer = PhoneCodeSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        return APIResponse.validation_error(
+            format_validation_errors(serializer.errors)
+        )
+    
+    phone = serializer.validated_data['phone']
+    code_type = serializer.validated_data['code_type']
+    
+    # 发送频率限制
+    cache_key = f"phone_code_limit:{phone}:{code_type}"
+    if cache.get(cache_key):
+        return APIResponse.error('验证码发送过于频繁，请稍后再试', 429)
+    
+    # 注册：手机号不得已注册；登录/重置/验证：手机号必须已注册
+    if code_type == 'register' and User.objects.filter(phone=phone).exists():
+        return APIResponse.error('该手机号已注册', 422, {'phone': ['该手机号已注册']})
+    if code_type in ['login', 'reset_password', 'verify_phone'] and not User.objects.filter(phone=phone).exists():
+        return APIResponse.error('该手机号未注册', 422, {'phone': ['该手机号未注册']})
+    
+    try:
+        ok, result = send_phone_verification_code(phone, code_type)
+        if ok:
+            return APIResponse.success({
+                'phone': phone,
+                'code_type': code_type,
+                'request_id': result.get('request_id')
+            }, '验证码发送成功')
+        else:
+            return APIResponse.server_error('验证码发送失败，请稍后重试', errors={
+                'sms_service': result.get('message', '短信服务不可用')
+            })
+    except Exception as e:
+        logger.error(f"短信验证码发送异常: {str(e)}")
+        return APIResponse.server_error('验证码发送失败，请稍后重试', errors={
+            'exception_type': type(e).__name__,
+            'exception_message': str(e)
+        })
+
+
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])
 def change_password(request):
@@ -509,42 +583,6 @@ def check_username_exists(request):
     return APIResponse.success({'exists': exists})
 
 
-def send_email_change_notification(old_email, new_email, username):
-    """发送邮箱修改通知邮件到旧邮箱"""
-    try:
-        subject = '【校企对接平台】邮箱修改通知'
-        message = f'''
-尊敬的用户 {username}：
-
-您好！您的账户邮箱已成功修改。
-
-原邮箱：{old_email}
-新邮箱：{new_email}
-修改时间：{timezone.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-如果这不是您本人的操作，请立即联系客服。
-
-此邮件为系统自动发送，请勿回复。
-
-校企对接平台
-        '''
-        
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[old_email],
-            fail_silently=False,
-        )
-        
-        logger.info(f"邮箱修改通知发送成功: {old_email} -> {new_email}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"邮箱修改通知发送失败: {old_email} -> {new_email} - {str(e)}")
-        return False
-
-
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])
 def change_email(request):
@@ -569,8 +607,6 @@ def change_email(request):
             request.user.email = new_email
             request.user.save(update_fields=['email'])
             
-            # 发送通知邮件到旧邮箱
-            send_email_change_notification(old_email, new_email, request.user.username)
             
             # 记录操作日志
             create_login_log(request.user, request, 'change_email', True, f'邮箱从 {old_email} 修改为 {new_email}')
@@ -585,6 +621,45 @@ def change_email(request):
             'exception_type': type(e).__name__,
             'exception_message': str(e)
         })
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def change_phone(request):
+    code_type = request.data.get('code_type')
+    serializer = PhoneCodeSerializer(data={
+        'phone': request.data.get('phone'),
+        'code_type': code_type
+    })
+    if not serializer.is_valid():
+        return APIResponse.validation_error(
+            format_validation_errors(serializer.errors)
+        )
+    new_phone = serializer.validated_data['phone']
+    phone_code = request.data.get('phone_code')
+    if not phone_code:
+        return APIResponse.validation_error({'phone_code': ['验证码不能为空']})
+    try:
+        with transaction.atomic():
+            old_phone = request.user.phone or ''
+            if new_phone == old_phone:
+                return APIResponse.error('新手机号不能与当前手机号相同', 422, {'phone': ['新手机号不能与当前手机号相同']})
+            if code_type == 'bind_new_phone' and old_phone:
+                return APIResponse.error('当前已绑定手机号，请使用修改手机号流程', 422, {'code_type': ['不允许在已绑定状态使用bind_new_phone']})
+            if code_type == 'change_phone' and not old_phone:
+                return APIResponse.error('当前未绑定手机号，请使用绑定手机号流程', 422, {'code_type': ['不允许在未绑定状态使用change_phone']})
+            if User.objects.filter(phone=new_phone).exclude(id=request.user.id).exists():
+                return APIResponse.error('该手机号已被其他用户使用', 422, {'phone': ['该手机号已被其他用户使用']})
+            ok, msg = validate_phone_code(new_phone, phone_code, code_type)
+            if not ok:
+                return APIResponse.error(f'验证码{msg}', 422, {'phone_code': [f'验证码{msg}']})
+            request.user.phone = new_phone
+            request.user.save(update_fields=['phone'])
+            create_login_log(request.user, request, 'change_phone', True, f'手机号从 {old_phone or "(空)"} 修改为 {new_phone}')
+            return APIResponse.success({'phone': new_phone}, '手机号修改成功')
+    except Exception as e:
+        logger.error(f"手机号修改失败: {str(e)}")
+        return APIResponse.server_error('手机号修改失败，请稍后重试', errors={'exception_type': type(e).__name__, 'exception_message': str(e)})
 
 
 @api_view(['POST'])

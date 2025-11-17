@@ -8,6 +8,7 @@ app_name = 'auth'
 urlpatterns = [
     # 发送验证码
     path('send-email-code/', views.send_email_code, name='send_email_code'),
+    path('send-phone-code/', views.send_phone_code, name='send_phone_code'),
     
     # 认证相关接口
     path('register/', views.register, name='register'),
@@ -24,6 +25,7 @@ urlpatterns = [
     
     # 邮箱相关
     path('change_email/', views.change_email, name='change_email'),
+    path('change_phone/', views.change_phone, name='change_phone'),
     
     # 登录日志
     path('login-logs/', views.login_logs, name='login_logs'),

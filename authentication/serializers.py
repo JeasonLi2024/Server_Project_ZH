@@ -18,6 +18,7 @@ class RegisterSerializer(serializers.Serializer):
         help_text="用户名"
     )
     email = serializers.EmailField(help_text="邮箱地址")
+    phone = serializers.CharField(required=False, max_length=11, help_text="手机号")
     password = serializers.CharField(
         min_length=6,
         max_length=128,
@@ -30,10 +31,8 @@ class RegisterSerializer(serializers.Serializer):
         write_only=True,
         help_text="确认密码"
     )
-    email_code = serializers.CharField(
-        max_length=10,
-        help_text="邮箱验证码"
-    )
+    email_code = serializers.CharField(max_length=10, required=False, help_text="邮箱验证码")
+    phone_code = serializers.CharField(max_length=10, required=False, help_text="手机验证码")
     
     # 用户类型
     user_type = serializers.ChoiceField(
@@ -74,6 +73,7 @@ class RegisterSerializer(serializers.Serializer):
         # 移除确认密码字段
         validated_data.pop('confirm_password', None)
         validated_data.pop('email_code', None)
+        validated_data.pop('phone_code', None)
         
         # 提取用户类型
         user_type = validated_data.pop('user_type')
@@ -85,6 +85,8 @@ class RegisterSerializer(serializers.Serializer):
             'password': validated_data.pop('password'),
             'user_type': user_type
         }
+        if 'phone' in validated_data:
+            user_data['phone'] = validated_data.pop('phone')
         
         # 创建用户
         user = User.objects.create_user(**user_data)
@@ -175,6 +177,13 @@ class RegisterSerializer(serializers.Serializer):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("该邮箱已被注册")
         return value
+
+    def validate_phone(self, value):
+        from django.core.validators import RegexValidator
+        RegexValidator(r'^1[3-9]\d{9}$')(value)
+        if User.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("该手机号已被注册")
+        return value
     
     def validate_school_id(self, value):
         """验证学校ID"""
@@ -199,9 +208,19 @@ class RegisterSerializer(serializers.Serializer):
         # 验证邮箱验证码
         email = attrs.get('email')
         email_code = attrs.get('email_code')
-        is_valid, message = validate_email_code(email, email_code, 'register')
-        if not is_valid:
-            raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
+        phone = attrs.get('phone')
+        phone_code = attrs.get('phone_code')
+        if email_code:
+            is_valid, message = validate_email_code(email, email_code, 'register')
+            if not is_valid:
+                raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
+        elif phone and phone_code:
+            from .phone_verification import validate_phone_code
+            ok, msg = validate_phone_code(phone, phone_code, 'register')
+            if not ok:
+                raise serializers.ValidationError({"phone_code": f"手机验证码{msg}"})
+        else:
+            raise serializers.ValidationError({"verification": ["必须提供邮箱验证码或手机验证码"]})
         
         # 根据用户类型验证必填字段
         user_type = attrs.get('user_type')
@@ -348,9 +367,9 @@ class AccountDeletionCancelSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     """统一登录序列化器"""
     type = serializers.ChoiceField(
-        choices=[('password', '密码登录'), ('email-verification', '邮箱验证码登录')],
+        choices=[('password', '密码登录'), ('email-verification', '邮箱验证码登录'), ('phone-verification', '手机验证码登录')],
         required=True,
-        help_text="登录类型：password-密码登录，email-verification-邮箱验证码登录"
+        help_text="登录类型：password、email-verification、phone-verification"
     )
     
     # 密码登录字段
@@ -373,6 +392,18 @@ class LoginSerializer(serializers.Serializer):
         max_length=6,
         required=False,
         help_text="邮箱验证码"
+    )
+
+    # 手机验证码登录字段
+    phone = serializers.CharField(
+        required=False,
+        max_length=11,
+        help_text="手机号"
+    )
+    phone_code = serializers.CharField(
+        max_length=6,
+        required=False,
+        help_text="手机验证码"
     )
     
     def validate(self, attrs):
@@ -397,13 +428,28 @@ class LoginSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"email": "邮箱不能为空"})
             if not email_code:
                 raise serializers.ValidationError({"email_code": "验证码不能为空"})
-            
-            # 验证邮箱验证码
-            is_valid, message = validate_email_code(email, email_code, 'login')
-            if not is_valid:
-                raise serializers.ValidationError({"email_code": f"邮箱验证码{message}"})
+
+        elif login_type == 'phone-verification':
+            phone = attrs.get('phone')
+            phone_code = attrs.get('phone_code')
+            if not phone:
+                raise serializers.ValidationError({"phone": "手机号不能为空"})
+            if not phone_code:
+                raise serializers.ValidationError({"phone_code": "验证码不能为空"})
+            # 手机验证码登录无需验证邮箱验证码
         
         return attrs
+
+class PhoneCodeSerializer(serializers.Serializer):
+    phone = serializers.CharField(max_length=11)
+    code_type = serializers.ChoiceField(choices=[
+        ('register', '注册'),
+        ('login', '登录'),
+        ('reset_password', '重置密码'),
+        ('change_phone', '更换手机号'),
+        ('bind_new_phone', '绑定新手机号'),
+        ('verify_phone', '验证绑定手机号')
+    ])
 
 
 

@@ -60,11 +60,11 @@ def send_email_verification_code_redis(email, code_type='register'):
         
         # 准备邮件内容
         subject_map = {
-            'register': '【校企对接平台】注册验证码',
-            'login': '【校企对接平台】登录验证码',
-            'reset_password': '【校企对接平台】重置密码验证码',
-            'change_email': '【校企对接平台】更换邮箱验证码',
-            'delete_account': '【校企对接平台】账户注销验证码',
+            'register': '【智汇】注册验证码',
+            'login': '【智汇】登录验证码',
+            'reset_password': '【智汇】重置密码验证码',
+            'change_email': '【智汇】更换邮箱验证码',
+            'delete_account': '【智汇】账户注销验证码',
         }
         
         message_map = {
@@ -75,7 +75,7 @@ def send_email_verification_code_redis(email, code_type='register'):
             'delete_account': f'您的账户注销验证码是：{code}，有效期5分钟，请勿泄露给他人。此操作将永久删除您的账户，请谨慎操作。',
         }
         
-        subject = subject_map.get(code_type, '【校企对接平台】验证码')
+        subject = subject_map.get(code_type, '【智汇】验证码')
         message = message_map.get(code_type, f'您的验证码是：{code}，有效期5分钟。')
         
         # 发送邮件
