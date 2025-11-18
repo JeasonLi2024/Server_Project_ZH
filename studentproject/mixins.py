@@ -18,7 +18,7 @@ class StudentBasicFieldsMixin(serializers.Serializer):
         """获取头像URL"""
         if hasattr(obj, 'user') and obj.user and obj.user.avatar:
             request = self.context.get('request')
-            return build_media_url(obj.user.avatar.url, request)
+            return build_media_url(obj.user.avatar, request)
         return None
 
 
@@ -102,7 +102,7 @@ class AuthorInfoMixin:
         """获取头像URL"""
         if user and user.avatar:
             request = self.context.get('request')
-            return build_media_url(user.avatar.url, request)
+            return build_media_url(user.avatar, request)
         return None
 
 

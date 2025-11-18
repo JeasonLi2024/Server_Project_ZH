@@ -279,6 +279,12 @@ class ResourceSerializer(serializers.ModelSerializer):
     
 class OrganizationSimpleSerializer(serializers.ModelSerializer):
     """组织简单信息序列化器"""
+    logo = serializers.SerializerMethodField()
+
+    def get_logo(self, obj):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        return build_media_url(obj.logo, request)
+
     class Meta:
         model = Organization
         fields = ['id', 'name', 'logo', 'status']
@@ -1047,3 +1053,4 @@ class ResourceUpdateSerializer(BaseFieldsMixin, AuditLogMixin, ResourceBaseSeria
         self._set_relations(instance, relations_data, is_update=True)
         
         return instance
+from common_utils import build_media_url

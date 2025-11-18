@@ -48,6 +48,7 @@ class LoginLog(models.Model):
         ('phone_code', '手机验证码登录'),
         ('wechat', '微信登录'),
         ('qq', 'QQ登录'),
+        ('cas', 'CAS统一认证'),
         ('register', '注册'),
     ]
     

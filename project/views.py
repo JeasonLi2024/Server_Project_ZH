@@ -1475,7 +1475,7 @@ def get_resource_download_info(request, resource_id):
                 'id': file.id,
                 'name': file.name,
                 'size': file.size,
-                'download_url': file.url if hasattr(file, 'url') else None,
+                'download_url': build_media_url(file, request) if hasattr(file, 'url') else None,
                 'created_at': file.created_at
             }
             # 如果文件有get_url方法，使用该方法获取完整URL

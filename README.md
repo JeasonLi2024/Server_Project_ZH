@@ -100,6 +100,11 @@ Supervisor常用命令：
 supervisorctl restart django_project_zhihui django_project_zhihui_test 
 supervisorctl restart celery_worker
 supervisorctl restart celery_beat
+更新配置后需要执行指令使配置生效
+- 使用系统级 supervisord：
+  - sudo supervisorctl -c /etc/supervisor/supervisord.conf reread
+  - sudo supervisorctl -c /etc/supervisor/supervisord.conf update
+  - sudo supervisorctl -c /etc/supervisor/supervisord.conf restart django_project_zhihui
 
 # 查看状态
 supervisorctl -c /etc/supervisor/supervisord.conf status

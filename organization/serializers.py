@@ -317,11 +317,7 @@ class OrganizationMemberListSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         
         if user.avatar:
-            # 如果有request对象，构建完整的URL
-            if request:
-                return request.build_absolute_uri(user.avatar.url)
-            else:
-                return user.avatar.url
+            return build_media_url(user.avatar, request)
         return None
 
 

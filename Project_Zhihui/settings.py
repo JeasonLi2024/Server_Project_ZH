@@ -188,6 +188,9 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+PROXY_PATH_PREFIX = os.getenv("PROXY_PATH_PREFIX", "/rch/zhihui")
+MEDIA_FORCE_HTTPS = os.getenv("MEDIA_FORCE_HTTPS", "False").lower() == "true"
+
 # 文件上传限制
 FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024  # 5MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
@@ -334,7 +337,7 @@ EMAIL_VERIFICATION_CODE_EXPIRE = 300  # 5分钟
 # 验证码长度
 EMAIL_VERIFICATION_CODE_LENGTH = 6
 # 默认头像URL
-DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_1.svg"
+DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_2.svg"
 
 # Milvus Configuration
 MILVUS_HOST = os.getenv('MILVUS_HOST', '100.116.251.123')
@@ -427,12 +430,15 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() == 'true'
 
 # ===== CAS Authentication Settings =====
 # CAS认证配置
 BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'True').lower() == 'true'
 BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
-BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://localhost:5173/login')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'https://llm.bupt.edu.cn/rch/zhihui/login')
 BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
 
 # 前端URL配置（用于CAS登出后重定向）

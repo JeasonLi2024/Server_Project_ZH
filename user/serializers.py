@@ -233,13 +233,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             
             if organization_user.organization:
                 organization = organization_user.organization
-                # 处理logo URL
+                # 处理logo URL（统一走媒体URL构建，支持代理前缀）
                 logo_url = None
                 if organization.logo:
-                    if request:
-                        logo_url = request.build_absolute_uri(organization.logo.url)
-                    else:
-                        logo_url = organization.logo.url
+                    logo_url = build_media_url(organization.logo, request)
                 
                 organization_data = {
                     'id': str(organization.id),

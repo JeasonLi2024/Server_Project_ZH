@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.db import transaction
+from django.db.utils import IntegrityError
 from typing import Dict, Optional, Tuple
 import logging
 
@@ -77,14 +78,11 @@ class BUPTCASService:
                 'service': service_url,
             }
             
-            # 发送验证请求
             response = requests.get(validate_url, params=params, timeout=10)
             response.raise_for_status()
+            raw_xml = response.text
+            success, user_data = self._parse_cas_response(raw_xml)
             
-            # 解析XML响应
-            success, user_data = self._parse_cas_response(response.text)
-            
-            # 更新日志
             auth_log.status = 'success' if success else 'failed'
             auth_log.response_data = user_data
             if not success:
@@ -114,210 +112,186 @@ class BUPTCASService:
             return False, {'error': error_msg}
     
     def _parse_cas_response(self, xml_content: str) -> Tuple[bool, Dict]:
-        """解析CAS服务器响应，区分学生和教师身份，正确映射到对应字段"""
         try:
             root = ET.fromstring(xml_content)
-            
-            # 定义命名空间
             ns = {'cas': 'http://www.yale.edu/tp/cas'}
-            
-            # 检查是否认证成功
             success_elem = root.find('.//cas:authenticationSuccess', ns)
             if success_elem is not None:
                 user_elem = success_elem.find('cas:user', ns)
                 if user_elem is not None:
-                    user_id = user_elem.text
-                    user_data = {
-                        'user_id': user_id,
-                        'attributes': {}
-                    }
-                    
-                    # 解析属性（CAS 3.0）
+                    user_id = user_elem.text or ''
                     raw_attributes = {}
                     attributes_elem = success_elem.find('cas:attributes', ns)
                     if attributes_elem is not None:
                         for attr in attributes_elem:
                             attr_name = attr.tag.replace('{http://www.yale.edu/tp/cas}', '')
                             raw_attributes[attr_name] = attr.text
-                    
-                    # 身份识别和属性映射
-                    normalized_attrs = {}
-                    user_type = 'unknown'
-                    
-                    # 用户基本信息映射
-                    if 'cn' in raw_attributes:
-                        normalized_attrs['real_name'] = raw_attributes['cn']
-                    elif 'displayName' in raw_attributes:
-                        normalized_attrs['real_name'] = raw_attributes['displayName']
-                    elif 'name' in raw_attributes:
-                        normalized_attrs['real_name'] = raw_attributes['name']
-                    
-                    if 'mail' in raw_attributes:
-                        normalized_attrs['email'] = raw_attributes['mail']
-                    elif 'email' in raw_attributes:
-                        normalized_attrs['email'] = raw_attributes['email']
-                    
-                    # 用户名映射
-                    if 'uid' in raw_attributes:
-                        normalized_attrs['username'] = raw_attributes['uid']
-                    else:
-                        normalized_attrs['username'] = user_id
-                    
-                    # 学生ID相关字段
-                    student_id = None
-                    if 'studentId' in raw_attributes:
-                        student_id = raw_attributes['studentId']
-                        user_type = 'student'
-                    elif 'studentNumber' in raw_attributes:
-                        student_id = raw_attributes['studentNumber']
-                        user_type = 'student'
-                    elif '学号' in raw_attributes:
-                        student_id = raw_attributes['学号']
-                        user_type = 'student'
-                    
-                    # 教师工号相关字段
-                    employee_id = None
-                    if 'employeeNumber' in raw_attributes:
-                        employee_id = raw_attributes['employeeNumber']
-                        if user_type == 'unknown':
-                            user_type = 'teacher'
-                    elif 'staffId' in raw_attributes:
-                        employee_id = raw_attributes['staffId']
-                        if user_type == 'unknown':
-                            user_type = 'teacher'
-                    elif 'employeeId' in raw_attributes:
-                        employee_id = raw_attributes['employeeId']
-                        if user_type == 'unknown':
-                            user_type = 'teacher'
-                    elif '工号' in raw_attributes:
-                        employee_id = raw_attributes['工号']
-                        if user_type == 'unknown':
-                            user_type = 'teacher'
-                    
-                    # 如果没有明确的身份标识，根据CAS用户ID格式判断
-                    if user_type == 'unknown':
-                        if user_id.isdigit() and len(user_id) >= 8:
-                            # 学号通常是8位以上的纯数字
-                            user_type = 'student'
-                            student_id = user_id
-                        else:
-                            # 工号通常较短或包含字母
-                            user_type = 'teacher'
-                            employee_id = user_id
-                    
-                    # 设置对应的ID字段
-                    if user_type == 'student':
-                        normalized_attrs['student_id'] = student_id or user_id
-                        normalized_attrs['user_type'] = 'student'
-                        
-                        # 学生相关信息
-                        if 'major' in raw_attributes:
-                            normalized_attrs['major'] = raw_attributes['major']
-                        elif '专业' in raw_attributes:
-                            normalized_attrs['major'] = raw_attributes['专业']
-                        
-                        if 'grade' in raw_attributes:
-                            normalized_attrs['grade'] = raw_attributes['grade']
-                        elif '年级' in raw_attributes:
-                            normalized_attrs['grade'] = raw_attributes['年级']
-                        elif 'class' in raw_attributes:
-                            normalized_attrs['grade'] = raw_attributes['class']
-                        
-                        if 'school' in raw_attributes:
-                            normalized_attrs['school'] = raw_attributes['school']
-                        elif 'college' in raw_attributes:
-                            normalized_attrs['school'] = raw_attributes['college']
-                        elif '学院' in raw_attributes:
-                            normalized_attrs['school'] = raw_attributes['学院']
-                        
-                    else:  # teacher
-                        normalized_attrs['employee_id'] = employee_id or user_id
-                        normalized_attrs['user_type'] = 'teacher'
-                        
-                        # 教师相关信息
-                        if 'department' in raw_attributes:
-                            normalized_attrs['department'] = raw_attributes['department']
-                        elif 'dept' in raw_attributes:
-                            normalized_attrs['department'] = raw_attributes['dept']
-                        elif '部门' in raw_attributes:
-                            normalized_attrs['department'] = raw_attributes['部门']
-                        elif '学院' in raw_attributes:
-                            normalized_attrs['department'] = raw_attributes['学院']
-                        
-                        if 'position' in raw_attributes:
-                            normalized_attrs['position'] = raw_attributes['position']
-                        elif 'title' in raw_attributes:
-                            normalized_attrs['position'] = raw_attributes['title']
-                        elif '职位' in raw_attributes:
-                            normalized_attrs['position'] = raw_attributes['职位']
-                        elif '职称' in raw_attributes:
-                            normalized_attrs['position'] = raw_attributes['职称']
-                        
-                        if 'organization' in raw_attributes:
-                            normalized_attrs['organization'] = raw_attributes['organization']
-                        elif 'org' in raw_attributes:
-                            normalized_attrs['organization'] = raw_attributes['org']
-                        elif '组织' in raw_attributes:
-                            normalized_attrs['organization'] = raw_attributes['组织']
-                    
-                    user_data['attributes'] = normalized_attrs
-                    user_data['raw_attributes'] = raw_attributes
-                    
-                    return True, user_data
-            
-            # 检查认证失败
+                    normalized_attrs = {
+                        'username': user_id,
+                        'real_name': raw_attributes.get('name', ''),
+                        'employee_id': raw_attributes.get('employeeNumber')
+                    }
+                    return True, {
+                        'user_id': user_id,
+                        'attributes': normalized_attrs,
+                        'raw_attributes': raw_attributes
+                    }
             failure_elem = root.find('.//cas:authenticationFailure', ns)
             if failure_elem is not None:
                 error_code = failure_elem.get('code', 'UNKNOWN')
                 error_msg = failure_elem.text or '认证失败'
-                return False, {
-                    'error': error_msg,
-                    'error_code': error_code
-                }
-            
+                return False, {'error': error_msg, 'error_code': error_code}
             return False, {'error': '无效的CAS响应格式'}
-            
         except ET.ParseError as e:
             logger.error(f"CAS XML parsing error: {str(e)}")
             return False, {'error': f'XML解析错误: {str(e)}'}
     
     def sync_cas_user(self, cas_user_data: Dict, request_info: Dict = None) -> Tuple[User, bool]:
-        """同步CAS用户数据到本地数据库，根据用户身份自动存储到对应表"""
+        """基于 `<cas:user>` 作为用户名查询/创建，并按前缀规则分流存储"""
         cas_user_id = cas_user_data.get('user_id')
         attributes = cas_user_data.get('attributes', {})
-        
         if not cas_user_id:
             raise ValueError("CAS用户ID不能为空")
-        
-        # 判断用户身份类型（学生或教师）
-        user_type = attributes.get('user_type', 'unknown')
-        student_id = attributes.get('student_id')
-        employee_id = attributes.get('employee_id')
-        
-        # 根据ID格式或属性判断用户类型
-        if not user_type or user_type == 'unknown':
-            if student_id or (cas_user_id and len(cas_user_id) >= 8 and cas_user_id.isdigit()):
-                user_type = 'student'
-            elif employee_id or (cas_user_id and not cas_user_id.isdigit()):
-                user_type = 'teacher'
-            else:
-                # 默认根据ID长度判断：学号通常较长且为纯数字，工号较短或包含字母
-                if cas_user_id.isdigit() and len(cas_user_id) >= 8:
-                    user_type = 'student'
-                else:
-                    user_type = 'teacher'
-        
+        username = cas_user_id
+        real_name = attributes.get('real_name') or attributes.get('name') or ''
+        employee_number = attributes.get('employee_id') or None
+
+        # 先用 CAS 返回的唯一编号（employeeNumber 或 user_id）匹配本地档案，决定用户与角色
+        # 优先匹配教师档案（OrganizationUser.employee_id == employeeNumber 或 == user_id）
+        from user.models import Student as StudentModel
+        from user.models import OrganizationUser as OrgUserModel
+        org_match = None
+        stu_match = None
+        if employee_number:
+            org_match = OrgUserModel.objects.select_related('user').filter(employee_id=employee_number).first()
+            stu_match = StudentModel.objects.select_related('user').filter(student_id=employee_number).first()
+        else:
+            # 无 employeeNumber 时用 cas_user_id 兜底匹配
+            org_match = OrgUserModel.objects.select_related('user').filter(employee_id=username).first()
+            stu_match = StudentModel.objects.select_related('user').filter(student_id=username).first()
+
+        is_teacher = bool(org_match)
+
+        # 常量：北京邮电大学ID（学校与组织）
+        from django.conf import settings as dj_settings
+        university_id = getattr(dj_settings, 'BUPT_UNIVERSITY_ID', 13)
+        organization_id = getattr(dj_settings, 'BUPT_ORGANIZATION_ID', 1)
+
         with transaction.atomic():
-            user = None
-            created = False
-            
-            if user_type == 'student':
-                # 处理学生用户
-                user, created = self._sync_student_user(cas_user_id, attributes, request_info)
+            # 若已有档案匹配，直接复用对应的用户对象
+            if org_match:
+                user = org_match.user
+                created = False
+            elif stu_match:
+                user = stu_match.user
+                created = False
             else:
-                # 处理教师用户
-                user, created = self._sync_teacher_user(cas_user_id, attributes, request_info)
-            
+                email = f"{username}@bupt.edu.cn"
+                user_type = 'organization' if is_teacher else 'student'
+                existing_by_email = User.objects.filter(email=email).first()
+                if existing_by_email:
+                    user = existing_by_email
+                    if user.username != username:
+                        user.username = username
+                    user.real_name = real_name
+                    user.user_type = user_type
+                    user.is_active = True
+                    user.save()
+                    created = False
+                else:
+                    try:
+                        user = User.objects.create_user(
+                            username=username,
+                            email=email,
+                            real_name=real_name,
+                            user_type=user_type,
+                            is_active=True,
+                        )
+                        created = True
+                    except IntegrityError:
+                        user = User.objects.get(email=email)
+                        if user.username != username:
+                            user.username = username
+                        user.real_name = real_name
+                        user.user_type = user_type
+                        user.is_active = True
+                        user.save()
+                        created = False
+
+            # 学生分支：创建/补全 Student，并确保 school=北京邮电大学，grade=前四位
+            if not is_teacher:
+                from organization.models import University
+                year = username[:4] if username[:4].isdigit() else '2024'
+                # 获取或创建学校
+                try:
+                    school = University.objects.get(id=university_id)
+                except University.DoesNotExist:
+                    school = University.objects.first()
+                    if not school:
+                        school = University.objects.create(id=university_id, school='北京邮电大学')
+                # 获取或创建学生档案
+                if hasattr(user, 'student_profile'):
+                    stu = user.student_profile
+                    if not stu.student_id:
+                        stu.student_id = username
+                    if not stu.grade:
+                        stu.grade = year
+                    if not stu.school_id:
+                        stu.school = school
+                    stu.save()
+                else:
+                    # 若此前按 employeeNumber 已匹配到学生档案，保证其 user 一致
+                    if stu_match:
+                        user = stu_match.user
+                    else:
+                        StudentModel.objects.get_or_create(
+                            user=user,
+                            defaults={
+                                'student_id': username,
+                                'school': school,
+                                'major': '',
+                                'grade': year,
+                            }
+                        )
+            else:
+                # 教师分支：创建/补全 OrganizationUser，权限=member，状态=approved，组织=北京邮电大学
+                from organization.models import Organization
+                try:
+                    org = Organization.objects.get(id=organization_id)
+                except Organization.DoesNotExist:
+                    org = Organization.objects.first()
+                    if not org:
+                        org = Organization.objects.create(id=organization_id, name='北京邮电大学', organization_type='university')
+                if hasattr(user, 'organization_profile'):
+                    org_user = user.organization_profile
+                    org_user.organization = org
+                    ident = employee_number or username
+                    if not org_user.employee_id:
+                        org_user.employee_id = ident
+                    elif org_user.employee_id != ident:
+                        org_user.employee_id = ident
+                    org_user.permission = 'member'
+                    org_user.status = 'approved'
+                    org_user.cas_user_id = username
+                    org_user.auth_source = 'cas'
+                    org_user.last_cas_login = timezone.now()
+                    org_user.save()
+                else:
+                    OrganizationUser.objects.create(
+                        user=user,
+                        organization=org,
+                        employee_id=employee_number or username,
+                        position='',
+                        department='',
+                        permission='member',
+                        status='approved',
+                        cas_user_id=username,
+                        auth_source='cas',
+                        last_cas_login=timezone.now(),
+                    )
+
+            # 记录认证日志
+            self._log_cas_auth(user, cas_user_id, 'login', 'success', cas_user_data={'user_id': cas_user_id, 'attributes': attributes}, request_info=request_info)
             return user, created
     
     def _sync_student_user(self, cas_user_id: str, attributes: Dict, request_info: Dict = None) -> Tuple[User, bool]:

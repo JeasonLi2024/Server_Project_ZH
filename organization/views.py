@@ -939,7 +939,7 @@ def upload_organization_logo(request):
             operation='organization_update',
             details={
                 'action': 'logo_upload',
-                'logo': updated_organization.logo.url if updated_organization.logo else None
+                'logo': build_media_url(updated_organization.logo, request) if updated_organization.logo else None
             }
         )
         

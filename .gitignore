@@ -58,6 +58,8 @@ celerybeat.pid
 
 # Supervisor
 *.pid
+supervisor_config.conf
+supervisord.conf
 
 # user define
 *.zip

@@ -16,6 +16,7 @@ from user.serializers import UserProfileSerializer
 from authentication.utils import get_client_ip, get_user_agent
 from .services import BUPTCASService
 from .models import CASAuthLog
+from authentication.models import LoginLog
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -86,17 +87,41 @@ def cas_callback(request):
         
         if not success:
             error_msg = cas_data.get('error', '票据验证失败')
+            # 统一认证失败日志（未识别用户）
+            try:
+                LoginLog.objects.create(
+                    login_type='cas',
+                    ip_address=request_info.get('ip_address') or '127.0.0.1',
+                    user_agent=request_info.get('user_agent') or '',
+                    is_success=False,
+                    failure_reason=error_msg,
+                )
+            except Exception:
+                pass
             return APIResponse.error(f'CAS认证失败: {error_msg}', 401)
         
         # 同步用户数据
         with transaction.atomic():
             user, created = cas_service.sync_cas_user(cas_data, request_info)
             
-            # 确保用户有组织关联（这里需要根据实际业务逻辑调整）
-            org_user = user.organization_profile
-            if not org_user.organization_id:
-                # 如果没有组织关联，可以设置默认组织或要求用户选择
-                # 这里暂时跳过，实际部署时需要处理
+            # 兼容无组织档案的用户：仅当存在 organization_profile 时再访问
+            try:
+                org_user = user.organization_profile
+                if not org_user.organization_id:
+                    pass
+            except Exception:
+                org_user = None
+
+            # 记录统一认证登录成功日志
+            try:
+                LoginLog.objects.create(
+                    user=user,
+                    login_type='cas',
+                    ip_address=request_info.get('ip_address') or '127.0.0.1',
+                    user_agent=request_info.get('user_agent') or '',
+                    is_success=True,
+                )
+            except Exception:
                 pass
             
             # 生成JWT Token
@@ -135,6 +160,21 @@ def cas_callback(request):
     
     except Exception as e:
         logger.error(f"CAS认证回调处理异常: {str(e)}")
+        # 统一认证异常失败日志（未识别用户）
+        try:
+            req_info = {
+                'ip_address': get_client_ip(request),
+                'user_agent': get_user_agent(request),
+            }
+            LoginLog.objects.create(
+                login_type='cas',
+                ip_address=req_info.get('ip_address') or '127.0.0.1',
+                user_agent=req_info.get('user_agent') or '',
+                is_success=False,
+                failure_reason=str(e),
+            )
+        except Exception:
+            pass
         return APIResponse.server_error('CAS认证处理失败，请稍后重试')
 
 
