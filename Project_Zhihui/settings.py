@@ -188,7 +188,7 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-PROXY_PATH_PREFIX = os.getenv("PROXY_PATH_PREFIX", "/rch/zhihui")
+PROXY_PATH_PREFIX = os.getenv("PROXY_PATH_PREFIX", "")
 MEDIA_FORCE_HTTPS = os.getenv("MEDIA_FORCE_HTTPS", "False").lower() == "true"
 
 # 文件上传限制
@@ -340,12 +340,12 @@ EMAIL_VERIFICATION_CODE_LENGTH = 6
 DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_2.svg"
 
 # Milvus Configuration
-MILVUS_HOST = os.getenv('MILVUS_HOST', '100.116.251.123')
+MILVUS_HOST = os.getenv('MILVUS_HOST', '10.129.22.101')
 MILVUS_PORT = os.getenv('MILVUS_PORT', '19530')
 MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'enterprise_vectors')
 
 # Embedding Service Configuration
-EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://100.116.251.123:11434/api/embed')
+EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://10.129.22.101:11434/api/embed')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'bge-m3:567m')
 EMBEDDING_DIM = int(os.getenv('EMBEDDING_DIM', '1024'))
 
@@ -438,11 +438,11 @@ SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() == 'true
 # CAS认证配置
 BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'True').lower() == 'true'
 BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
-BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'https://llm.bupt.edu.cn/rch/zhihui/login')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://10.129.22.101:18088/login')
 BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
 
 # 前端URL配置（用于CAS登出后重定向）
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://llm.bupt.edu.cn')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://10.129.22.101:18088')
 
 # CAS相关设置
 CAS_SETTINGS = {

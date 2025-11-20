@@ -8,7 +8,7 @@ from pymilvus import connections, Collection, utility
 import json
 
 # ========== 配置 ==========
-MILVUS_HOST = "100.116.251.123"
+MILVUS_HOST = "10.129.22.101"
 MILVUS_PORT = "19530"
 COLLECTION_NAME = "enterprise_vectors"
 
@@ -77,7 +77,8 @@ def query_data_by_pid(collection, pid=None, limit=10):
         results = collection.query(
             expr=expr,
             output_fields=["Pid", "ChunkNumber", "Text", "AddData1", "AddData2"],
-            limit=limit
+            limit=limit,
+            consistency_level="Eventually"
         )
         
         if not results:
@@ -120,7 +121,8 @@ def get_all_pids(collection):
         results = collection.query(
             expr="Pid >= 0",
             output_fields=["Pid"],
-            limit=1000  # 限制查询数量
+            limit=1000,  # 限制查询数量
+            consistency_level="Eventually"
         )
         
         if not results:

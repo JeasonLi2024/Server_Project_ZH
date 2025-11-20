@@ -16,7 +16,7 @@ from .serializers import (
     RequirementSerializer, RequirementCreateSerializer, RequirementUpdateSerializer,
     ResourceSerializer, ResourceCreateSerializer, ResourceUpdateSerializer
 )
-from common_utils import APIResponse, format_validation_errors, paginate_queryset
+from common_utils import APIResponse, format_validation_errors, paginate_queryset, build_media_url
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -1471,16 +1471,18 @@ def get_resource_download_info(request, resource_id):
         # 构建文件下载信息
         file_info = []
         for file in files:
+            download_url = None
+            if file.url:
+                download_url = file.url
+            elif file.real_path:
+                download_url = build_media_url(file.real_path, request)
             file_data = {
                 'id': file.id,
                 'name': file.name,
                 'size': file.size,
-                'download_url': build_media_url(file, request) if hasattr(file, 'url') else None,
+                'download_url': download_url,
                 'created_at': file.created_at
             }
-            # 如果文件有get_url方法，使用该方法获取完整URL
-            if hasattr(file, 'get_url'):
-                file_data['download_url'] = file.get_url()
             file_info.append(file_data)
         
         # 增加下载次数（仅限学生用户）

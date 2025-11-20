@@ -1,6 +1,7 @@
 from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
 import logging
+from django.conf import settings
 
 # 使用authentication记录器以匹配settings.py中的配置
 logger = logging.getLogger('authentication')
@@ -17,12 +18,48 @@ class JWTAuthMiddleware(BaseMiddleware):
         super().__init__(inner)
 
     async def __call__(self, scope, receive, send):
-        print(f"[JWT中间件] 收到请求类型: {scope['type']}, 路径: {scope.get('path', 'unknown')}")
+        print(f"[JWT中间件] 收到请求类型: {scope['type']}, 路径: {scope.get('path', 'unknown')} scheme: {scope.get('scheme', 'unknown')} root_path: {scope.get('root_path', '')}")
+        try:
+            headers_dict = {k.decode('utf-8'): v.decode('utf-8') for k, v in dict(scope.get('headers', [])).items()}
+            upgrade = headers_dict.get('upgrade')
+            connection_hdr = headers_dict.get('connection')
+            sec_key = headers_dict.get('sec-websocket-key')
+            sec_ver = headers_dict.get('sec-websocket-version')
+            print(f"[JWT中间件] 握手头部 upgrade={upgrade} connection={connection_hdr} sec-key={sec_key} sec-ver={sec_ver}")
+        except Exception:
+            pass
         
         # 只处理WebSocket连接
         if scope["type"] != "websocket":
             print(f"[JWT中间件] 跳过非WebSocket请求: {scope['type']}")
+            try:
+                path = scope.get('path', '')
+                if path.startswith('/ws/notification'):
+                    logger.warning(f"[JWT中间件] 检测到对 {path} 的非WebSocket请求，可能是反向代理未进行升级 (Upgrade: websocket)")
+            except Exception:
+                pass
             return await super().__call__(scope, receive, send)
+
+        # 去除代理前缀以兼容域名代理路径
+        try:
+            proxy_prefix = getattr(settings, 'PROXY_PATH_PREFIX', '') or ''
+            path = scope.get('path', '')
+            original_path = path
+            if proxy_prefix and path.startswith(proxy_prefix):
+                new_path = path[len(proxy_prefix):] or '/'
+                scope['path'] = new_path
+                raw_path = scope.get('raw_path')
+                if isinstance(raw_path, (bytes, bytearray)):
+                    try:
+                        raw_str = raw_path.decode('utf-8')
+                        if raw_str.startswith(proxy_prefix):
+                            raw_new = raw_str[len(proxy_prefix):] or '/'
+                            scope['raw_path'] = raw_new.encode('utf-8')
+                    except Exception:
+                        pass
+                print(f"[JWT中间件] 代理前缀剥离: {proxy_prefix} 原始路径: {original_path} 新路径: {new_path}")
+        except Exception:
+            pass
 
         print(f"[JWT中间件] WebSocket连接开始处理: {scope.get('path', 'unknown')}")
         logger.info(f"[JWT中间件] WebSocket连接开始处理: {scope.get('path', 'unknown')}")

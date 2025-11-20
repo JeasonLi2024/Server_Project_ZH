@@ -23,9 +23,9 @@ class MilvusManager:
     
     def __init__(self):
         if not hasattr(self, 'initialized'):
-            self.host = getattr(settings, 'MILVUS_HOST', '100.116.251.123')
+            self.host = getattr(settings, 'MILVUS_HOST', '10.129.22.101')
             self.port = getattr(settings, 'MILVUS_PORT', '19530')
-            self.collection_name = getattr(settings, 'MILVUS_COLLECTION', 'pdf_collection')
+            self.collection_name = getattr(settings, 'MILVUS_COLLECTION', 'enterprise_vectors')
             self.initialized = True
     
     def connect(self):
@@ -68,12 +68,17 @@ class MilvusManager:
                 raise ConnectionError("无法连接到Milvus")
         
         if not utility.has_collection(self.collection_name):
+            logger.error(f"[Milvus] 未找到集合: {self.collection_name}")
             raise ValueError(f"Collection '{self.collection_name}' 不存在，请先创建")
         
         collection = Collection(self.collection_name)
         if load:
-            collection.load()
-            logger.debug(f"[Milvus] Collection '{self.collection_name}' 已加载")
+            try:
+                collection.load()
+                logger.debug(f"[Milvus] Collection '{self.collection_name}' 已加载")
+            except Exception as e:
+                logger.error(f"[Milvus ERROR] 加载集合失败: {e}")
+                raise
         
         return collection
     
