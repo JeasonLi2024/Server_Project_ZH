@@ -24,6 +24,8 @@ local_settings.py
 db.sqlite3
 media/
 static/
+**/migrations/*
+!**/migrations/__init__.py
 
 # Virtual Environment
 venv/
