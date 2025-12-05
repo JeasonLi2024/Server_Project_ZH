@@ -6,11 +6,12 @@ Milvus向量数据库查看工具
 
 from pymilvus import connections, Collection, utility
 import json
+import os
 
 # ========== 配置 ==========
-MILVUS_HOST = "10.129.22.101"
-MILVUS_PORT = "19530"
-COLLECTION_NAME = "enterprise_vectors"
+MILVUS_HOST = os.getenv('MILVUS_HOST')
+MILVUS_PORT = os.getenv('MILVUS_PORT', '19530')
+MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'enterprise_vectors')
 
 def connect_to_milvus():
     """连接到Milvus数据库"""

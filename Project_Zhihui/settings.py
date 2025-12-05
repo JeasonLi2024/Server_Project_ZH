@@ -32,7 +32,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure--)i3x_fg)a$$d24)13hq=ydp(f
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,*.ngrok.io,151af97252e4.ngrok-free.app,llm.bupt.edu.cn").split(",")
-CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "https://llm.bupt.edu.cn").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS").split(",")
 
 
 # Application definition
@@ -188,7 +188,9 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# 代理路径前缀
 PROXY_PATH_PREFIX = os.getenv("PROXY_PATH_PREFIX", "")
+# 媒体文件强制HTTPS
 MEDIA_FORCE_HTTPS = os.getenv("MEDIA_FORCE_HTTPS", "False").lower() == "true"
 
 # 文件上传限制
@@ -252,19 +254,19 @@ SIMPLE_JWT = {
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+        "LOCATION": os.getenv("REDIS_CACHES_URL", "redis://127.0.0.1:6379/1"),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
     }
 }
 
-# Channels Configuration
+# Channels Configuration (使用Redis)
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [os.getenv("REDIS_URL", "redis://127.0.0.1:6379/4")],
+            "hosts": [os.getenv("REDIS_CHANNELS_URL", "redis://127.0.0.1:6379/4")],
         },
     },
 }
@@ -340,14 +342,26 @@ EMAIL_VERIFICATION_CODE_LENGTH = 6
 DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_2.svg"
 
 # Milvus Configuration
-MILVUS_HOST = os.getenv('MILVUS_HOST', '10.129.22.101')
+MILVUS_HOST = os.getenv('MILVUS_HOST', '10.160.64.18')
 MILVUS_PORT = os.getenv('MILVUS_PORT', '19530')
 MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'enterprise_vectors')
 
 # Embedding Service Configuration
-EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://10.129.22.101:11434/api/embed')
+EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://10.160.64.18:11434/api/embed')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'bge-m3:567m')
 EMBEDDING_DIM = int(os.getenv('EMBEDDING_DIM', '1024'))
+
+ 
+ALIYUN_SMS_SIGN_NAME = os.getenv('ALIYUN_SMS_SIGN_NAME', '速通互联验证码')
+ALIYUN_SMS_TEMPLATE_REGISTER = os.getenv('ALIYUN_SMS_TEMPLATE_REGISTER', '100001')
+ALIYUN_SMS_TEMPLATE_LOGIN = os.getenv('ALIYUN_SMS_TEMPLATE_LOGIN', '100001')
+ALIYUN_SMS_TEMPLATE_CHANGE_PHONE = os.getenv('ALIYUN_SMS_TEMPLATE_CHANGE_PHONE', '100002')
+ALIYUN_SMS_TEMPLATE_RESET_PASSWORD = os.getenv('ALIYUN_SMS_TEMPLATE_RESET_PASSWORD', '100003')
+ALIYUN_SMS_TEMPLATE_BIND_NEW_PHONE = os.getenv('ALIYUN_SMS_TEMPLATE_BIND_NEW_PHONE', '100004')
+ALIYUN_SMS_TEMPLATE_VERIFY_PHONE = os.getenv('ALIYUN_SMS_TEMPLATE_VERIFY_PHONE', '100005')
+
+ALIBABA_CLOUD_ACCESS_KEY_ID = os.getenv('ALIBABA_CLOUD_ACCESS_KEY_ID', '')
+ALIBABA_CLOUD_ACCESS_KEY_SECRET = os.getenv('ALIBABA_CLOUD_ACCESS_KEY_SECRET', '')
 
 # Logging
 LOGGING = {
@@ -438,11 +452,11 @@ SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() == 'true
 # CAS认证配置
 BUPT_CAS_ENABLED = os.getenv('BUPT_CAS_ENABLED', 'True').lower() == 'true'
 BUPT_CAS_SERVER_URL = os.getenv('BUPT_CAS_SERVER_URL', 'https://auth.bupt.edu.cn/authserver')
-BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://10.129.22.101:18088/login')
+BUPT_CAS_SERVICE_URL = os.getenv('BUPT_CAS_SERVICE_URL', 'http://10.160.64.18:18088/login')
 BUPT_CAS_VERSION = os.getenv('BUPT_CAS_VERSION', '3.0')
 
 # 前端URL配置（用于CAS登出后重定向）
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://10.129.22.101:18088')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://10.160.64.18:18088')
 
 # CAS相关设置
 CAS_SETTINGS = {
