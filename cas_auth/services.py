@@ -170,7 +170,15 @@ class BUPTCASService:
             org_match = OrgUserModel.objects.select_related('user').filter(employee_id=username).first()
             stu_match = StudentModel.objects.select_related('user').filter(student_id=username).first()
 
-        is_teacher = bool(org_match)
+        # 根据相关标准规定，学号（工号）编码为10位数字“WWWWXYZZZZ”，其中X=8，9表示教职工
+        is_teacher = False
+        if username and len(username) == 10 and username.isdigit():
+            if username[4] in ('8', '9'):
+                is_teacher = True
+        
+        # 兼容旧逻辑：如果规则未明确（非10位数字）但本地已有教师档案，维持教师身份
+        if not is_teacher and org_match:
+            is_teacher = True
 
         # 常量：北京邮电大学ID（学校与组织）
         from django.conf import settings as dj_settings
@@ -261,7 +269,12 @@ class BUPTCASService:
                 except Organization.DoesNotExist:
                     org = Organization.objects.first()
                     if not org:
-                        org = Organization.objects.create(id=organization_id, name='北京邮电大学', organization_type='university')
+                        org = Organization.objects.create(
+                            id=organization_id, 
+                            name='北京邮电大学', 
+                            organization_type='university',
+                            university_type='double_first_class'
+                        )
                 if hasattr(user, 'organization_profile'):
                     org_user = user.organization_profile
                     org_user.organization = org

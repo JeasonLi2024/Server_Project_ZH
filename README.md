@@ -59,8 +59,8 @@ apps（部分）：
 - 清除旧迁移数据文件：`find . -path "*/migrations/*.py" -not -name "__init__.py" -delete`
 - 生成新迁移文件：`python manage.py makemigrations`，若出现`ModuleNotFoundError: No module named 'django.db.migrations.migration' `错误，强制重新安装Django：`pip install --force-reinstall django`
 - 迁移数据库：`python manage.py migrate`
-- 启动后端（简易）：`python manage.py runserver 0.0.0.0:8000`
-- 启动 ASGI + WebSocket（推荐）：`daphne -b 0.0.0.0 -p 8000 Project_Zhihui.asgi:application`
+- 启动后端（简易）：`python manage.py runserver 0.0.0.0:50008`
+- 启动 ASGI + WebSocket（推荐）：`daphne -b 0.0.0.0 -p 50008 Project_Zhihui.asgi:application`
 - 启动任务：`celery -A Project_Zhihui worker -l info`
 - 启动定时：`celery -A Project_Zhihui beat -l info`
 

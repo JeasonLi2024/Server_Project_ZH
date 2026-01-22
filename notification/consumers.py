@@ -1,6 +1,8 @@
 import json
 import logging
-import redis
+import redis.asyncio as redis
+import time
+import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
@@ -24,7 +26,9 @@ class NotificationConsumer(AsyncWebsocketConsumer):
                 host=getattr(settings, 'REDIS_HOST', 'localhost'),
                 port=getattr(settings, 'REDIS_PORT', 6379),
                 db=getattr(settings, 'REDIS_DB', 0),
-                decode_responses=True
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5
             )
         except Exception as e:
             logger.error(f"Redis连接失败: {str(e)}")
@@ -32,6 +36,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     
     async def connect(self):
         """WebSocket连接"""
+        start_time = time.time()
+        logger.info(f"Connect start: {start_time}")
         self.user = self.scope["user"]
         
         # 检查用户是否已认证
@@ -44,59 +50,128 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         self.room_group_name = f'notifications_{self.user.id}'
         
         # 加入房间组
+        t1 = time.time()
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
+        logger.info(f"Joined group in {time.time() - t1:.4f}s")
         
         # 接受WebSocket连接
+        t2 = time.time()
         await self.accept()
+        logger.info(f"Accepted connection in {time.time() - t2:.4f}s")
         
         # 将用户添加到在线用户集合
+        t3 = time.time()
         await self.add_user_to_online_set()
+        logger.info(f"Added to online set in {time.time() - t3:.4f}s")
         
         logger.info(f"用户 {self.user.id} 连接到通知WebSocket")
         
         # 发送当前未读通知数量
+        t4 = time.time()
         await self.send_unread_count()
-    
+        logger.info(f"Sent unread count in {time.time() - t4:.4f}s")
+
+        # 启动心跳任务
+        # self.heartbeat_task = asyncio.create_task(self.send_heartbeat())
+        
+        logger.info(f"Connect finished. Total duration: {time.time() - start_time:.4f}s")
+
     async def disconnect(self, close_code):
         """WebSocket断开连接"""
-        if hasattr(self, 'room_group_name'):
-            # 离开房间组
-            await self.channel_layer.group_discard(
-                self.room_group_name,
-                self.channel_name
-            )
-        
-        # 从在线用户集合中移除用户
-        await self.remove_user_from_online_set()
-        
-        logger.info(f"用户 {self.user.id if hasattr(self, 'user') else 'Unknown'} 断开通知WebSocket连接")
-    
-    async def receive(self, text_data):
-        """接收WebSocket消息"""
+        # 取消心跳任务
+        if hasattr(self, 'heartbeat_task'):
+            self.heartbeat_task.cancel()
+            try:
+                # 使用 wait_for 防止取消任务挂起
+                await asyncio.wait_for(self.heartbeat_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception as e:
+                logger.error(f"取消心跳任务出错: {e}")
+
         try:
-            text_data_json = json.loads(text_data)
-            message_type = text_data_json.get('type')
+            if hasattr(self, 'room_group_name'):
+                # 离开房间组，增加超时保护
+                await asyncio.wait_for(
+                    self.channel_layer.group_discard(
+                        self.room_group_name,
+                        self.channel_name
+                    ),
+                    timeout=2.0
+                )
+        except Exception as e:
+            logger.error(f"离开房间组失败: {str(e)}")
+        
+        # 从在线用户集合中移除用户，增加超时保护
+        try:
+            await asyncio.wait_for(self.remove_user_from_online_set(), timeout=2.0)
+        except Exception as e:
+            logger.error(f"移除在线用户失败: {str(e)}")
             
-            if message_type == 'mark_as_read':
-                # 标记通知为已读
-                notification_id = text_data_json.get('notification_id')
-                if notification_id:
-                    await self.mark_notification_as_read(notification_id)
-            
-            elif message_type == 'get_unread_count':
-                # 获取未读通知数量
-                await self.send_unread_count()
-            
-            elif message_type == 'get_recent_notifications':
-                # 获取最近的通知
-                limit = text_data_json.get('limit', 10)
-                await self.send_recent_notifications(limit)
-            
-            else:
-                logger.warning(f"未知的消息类型: {message_type}")
+        # 关闭Redis连接
+        if self.redis_client:
+            try:
+                await self.redis_client.aclose()
+            except Exception as e:
+                logger.error(f"关闭Redis连接失败: {str(e)}")
+        
+        logger.info(f"用户 {self.user.id if hasattr(self, 'user') else 'Unknown'} 断开通知WebSocket连接, code: {close_code}")
+
+    async def send_heartbeat(self):
+        """发送应用层心跳包"""
+        try:
+            while True:
+                await asyncio.sleep(20)  # 每20秒发送一次
+                await self.send(text_data=json.dumps({
+                    'type': 'ping',
+                    'message': 'keepalive'
+                }, ensure_ascii=False))
+                logger.debug(f"已发送心跳包给用户 {self.user.id}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"发送心跳包失败: {str(e)}")
+
+    
+    async def receive(self, text_data=None, bytes_data=None):
+        """接收WebSocket消息"""
+        logger.info(f"Receive called - text_data: {bool(text_data)}, bytes_data: {bool(bytes_data)}")
+        if text_data:
+            logger.info(f"收到文本数据: {text_data[:100]}")
+        
+        try:
+            if text_data:
+                text_data_json = json.loads(text_data)
+                message_type = text_data_json.get('type')
+                
+                if message_type == 'mark_as_read':
+                    # 标记通知为已读
+                    notification_id = text_data_json.get('notification_id')
+                    if notification_id:
+                        await self.mark_notification_as_read(notification_id)
+                
+                elif message_type == 'get_unread_count':
+                    # 获取未读通知数量
+                    await self.send_unread_count()
+                
+                elif message_type == 'get_recent_notifications':
+                    # 获取最近的通知
+                    limit = text_data_json.get('limit', 10)
+                    await self.send_recent_notifications(limit)
+                
+                elif message_type == 'ping':
+                    # 处理心跳包
+                    logger.info(f"收到心跳包: {self.user.id}")
+                    await self.send(text_data=json.dumps({
+                        'type': 'pong',
+                        'message': 'pong'
+                    }, ensure_ascii=False))
+
+                else:
+                    logger.warning(f"未知的消息类型: {message_type}")
                 
         except json.JSONDecodeError:
             logger.error("接收到无效的JSON数据")
@@ -188,7 +263,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         """将用户添加到在线用户集合"""
         if self.redis_client and hasattr(self, 'user') and self.user.is_authenticated:
             try:
-                await database_sync_to_async(self.redis_client.sadd)('online_users', str(self.user.id))
+                await self.redis_client.sadd('online_users', str(self.user.id))
                 logger.debug(f"用户 {self.user.id} 已添加到在线用户集合")
             except Exception as e:
                 logger.error(f"添加用户到在线集合时出错: {str(e)}")
@@ -197,7 +272,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         """从在线用户集合中移除用户"""
         if self.redis_client and hasattr(self, 'user') and self.user.is_authenticated:
             try:
-                await database_sync_to_async(self.redis_client.srem)('online_users', str(self.user.id))
+                await self.redis_client.srem('online_users', str(self.user.id))
                 logger.debug(f"用户 {self.user.id} 已从在线用户集合中移除")
             except Exception as e:
                 logger.error(f"从在线集合移除用户时出错: {str(e)}")
