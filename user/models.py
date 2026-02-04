@@ -239,6 +239,17 @@ class OrganizationUser(models.Model):
         ('approved', '已通过'),
         ('rejected', '未通过'),
     ]
+
+    IDENTITY_CHOICES = [
+        ('staff', '普通职工'),
+        ('teacher', '教师'),
+    ]
+
+    MENTOR_TYPE_CHOICES = [
+        ('master', '硕士生导师'),
+        ('phd', '博士生导师'),
+        ('none', '无'),
+    ]
     
     # 关联用户和组织
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='organization_profile')
@@ -248,9 +259,16 @@ class OrganizationUser(models.Model):
     position = models.CharField('职位/职务', max_length=100, blank=True,
                                help_text='企业：职位；大学：职务（如教授、副教授、讲师等）')
     department = models.CharField('部门/院系', max_length=100, blank=True,
-                                 help_text='企业：部门；大学：院系')
+                                 help_text='企业：部门；大学：院系/实验室')
     permission = models.CharField('权限', max_length=10, choices=PERMISSION_CHOICES, default='pending')
     status = models.CharField('认证状态', max_length=20, choices=STATUS_CHOICES, default='pending')
+
+    # 身份与教师扩展字段
+    identity = models.CharField('身份标识', max_length=20, choices=IDENTITY_CHOICES, default='staff',
+                               help_text='区分普通职工与教师')
+    mentor_type = models.CharField('导师类型', max_length=20, choices=MENTOR_TYPE_CHOICES, default='none', blank=True)
+    research_direction = models.CharField('研究方向', max_length=200, blank=True)
+    info = models.TextField('个人简介', blank=True, help_text='教师个人简介/详情')
     
     # CAS认证相关字段（精简版）
     employee_id = models.CharField('工号', max_length=50, blank=True, null=True,

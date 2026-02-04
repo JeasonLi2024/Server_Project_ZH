@@ -542,6 +542,16 @@ class BUPTCASService:
             if attributes.get('department') and not org_user.department:
                 org_user.department = attributes.get('department')
             
+            # 判断并更新教师身份
+            # 只有学工号可用于判断。逻辑：如果有工号且通过组织用户匹配进来，默认为教师身份
+            # 注意：这里假设通过工号匹配到的组织用户（非学生）都是教师/教职工
+            # 如果需要区分行政人员和教师，目前没有依据，暂统一设为 teacher
+            # 后续如果需要更细粒度的控制，可以在管理后台手动调整 identity
+            if org_user.employee_id:
+                # 仅当身份尚未设置或为默认值时更新，避免覆盖管理员手动设置的值
+                if org_user.identity == 'staff': 
+                     org_user.identity = 'teacher'
+            
             org_user.save()
         
         # 记录认证日志

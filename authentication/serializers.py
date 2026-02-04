@@ -162,14 +162,26 @@ class RegisterSerializer(serializers.Serializer):
                 raise serializers.ValidationError("必须选择注册方式并提供相应信息")
             
             # 创建组织用户资料
-            OrganizationUser.objects.create(
-                user=user,
-                organization=organization,
-                position=validated_data.get('position', '成员'),  # 邀请码注册默认为成员
-                department=validated_data.get('department', ''),
-                permission='owner' if registration_choice == 'new' else 'member',  # 创建组织的用户为所有者，其他为成员
-                status='approved' if registration_choice in ['new', 'invitation'] else 'pending'  # 创建组织和邀请码注册直接通过审核
-            )
+            org_user_data = {
+                'user': user,
+                'organization': organization,
+                'position': validated_data.get('position', '成员'),  # 邀请码注册默认为成员
+                'department': validated_data.get('department', ''),
+                'permission': 'owner' if registration_choice == 'new' else 'member',  # 创建组织的用户为所有者，其他为成员
+                'status': 'approved' if registration_choice in ['new', 'invitation'] else 'pending',  # 创建组织和邀请码注册直接通过审核
+                'identity': validated_data.get('identity', 'staff')
+            }
+            
+            # 如果是教师身份，添加额外字段
+            if org_user_data['identity'] == 'teacher':
+                if validated_data.get('mentor_type'):
+                    org_user_data['mentor_type'] = validated_data.get('mentor_type')
+                if validated_data.get('research_direction'):
+                    org_user_data['research_direction'] = validated_data.get('research_direction')
+                if validated_data.get('info'):
+                    org_user_data['info'] = validated_data.get('info')
+            
+            OrganizationUser.objects.create(**org_user_data)
         
         return user
     
