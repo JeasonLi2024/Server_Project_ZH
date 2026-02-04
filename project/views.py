@@ -406,6 +406,20 @@ def delete_requirement(request, requirement_id):
                 file_obj.delete()
                 deleted_files_info.append(file_info)
             
+            # 删除海报封面文件
+            if requirement.cover:
+                try:
+                    import os
+                    from django.conf import settings
+                    
+                    # 获取封面文件的完整路径
+                    cover_path = requirement.cover.path
+                    if os.path.exists(cover_path):
+                        os.remove(cover_path)
+                        logger.info(f"已删除海报封面文件: {cover_path}")
+                except Exception as e:
+                    logger.warning(f"删除海报封面文件失败: {requirement.cover.name}, 错误: {str(e)}")
+
             # 删除需求（关联的资源会被保留，只清除关联关系）
             # Django会自动处理多对多关系的清理
             # 关联的Resource对象不会被删除，只会清除关联关系

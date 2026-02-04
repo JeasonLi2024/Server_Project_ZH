@@ -1,7 +1,7 @@
 from celery import shared_task
 from django.conf import settings
 from .models import Requirement
-from .services import get_or_create_collection, delete_requirement_vectors, sync_requirement_vectors
+from .services import get_or_create_collection, delete_requirement_vectors, sync_requirement_vectors, sync_raw_docs_auto
 import logging
 import os
 import time
@@ -102,27 +102,59 @@ def cleanup_temp_cover_images():
         for filename in os.listdir(temp_dir):
             file_path = os.path.join(temp_dir, filename)
             
-            # 跳过非文件
+            # 确保是文件
             if not os.path.isfile(file_path):
                 continue
                 
-            try:
-                # 获取文件修改时间
-                file_mtime = os.path.getmtime(file_path)
-                
-                # 如果文件超过24小时
-                if current_time - file_mtime > expiration_time:
+            # 检查最后修改时间
+            file_mtime = os.path.getmtime(file_path)
+            if current_time - file_mtime > expiration_time:
+                try:
                     os.remove(file_path)
                     deleted_count += 1
-                    logger.debug(f"Deleted expired temp file: {filename}")
+                except Exception as e:
+                    logger.error(f"Error deleting temp file {file_path}: {e}")
+                    error_count += 1
                     
-            except Exception as e:
-                logger.error(f"Error deleting file {filename}: {e}")
-                error_count += 1
-                
         logger.info(f"Cleanup completed. Deleted: {deleted_count}, Errors: {error_count}")
-        return f"Deleted {deleted_count} files, {error_count} errors"
+        return f"Deleted {deleted_count} files"
         
     except Exception as e:
-        logger.error(f"Cleanup task failed: {e}")
-        return f"Task failed: {e}"
+        logger.error(f"Error in cleanup_temp_cover_images: {e}")
+        return f"Error: {e}"
+
+@shared_task
+def sync_requirement_vectors_task(requirement_id):
+    """
+    异步同步需求向量 (Semantic)
+    """
+    try:
+        req = Requirement.objects.get(id=requirement_id)
+        sync_requirement_vectors(req)
+    except Requirement.DoesNotExist:
+        logger.warning(f"Requirement {requirement_id} not found for vector sync")
+    except Exception as e:
+        logger.error(f"Error in sync_requirement_vectors_task: {e}")
+
+@shared_task
+def sync_raw_docs_auto_task(requirement_id):
+    """
+    异步同步需求 Raw Docs (QA)
+    """
+    try:
+        req = Requirement.objects.get(id=requirement_id)
+        sync_raw_docs_auto(req)
+    except Requirement.DoesNotExist:
+        logger.warning(f"Requirement {requirement_id} not found for raw docs sync")
+    except Exception as e:
+        logger.error(f"Error in sync_raw_docs_auto_task: {e}")
+
+@shared_task
+def delete_requirement_vectors_task(requirement_id):
+    """
+    异步删除需求向量
+    """
+    try:
+        delete_requirement_vectors(requirement_id)
+    except Exception as e:
+        logger.error(f"Error in delete_requirement_vectors_task: {e}")
