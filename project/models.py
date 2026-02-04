@@ -116,6 +116,7 @@ class Requirement(models.Model):
     """需求模型"""
 
     STATUS_CHOICES = [
+        ('draft', '草稿'),
         ('under_review', '审核中'),
         ('review_failed', '审核失败'),
         ('in_progress', '进行中'),
@@ -158,6 +159,13 @@ class Requirement(models.Model):
     views = models.IntegerField(default=0, verbose_name='浏览数')
     resources = models.ManyToManyField('Resource', blank=True, verbose_name='关联资源')
     files = models.ManyToManyField(File, blank=True, verbose_name='文件信息')
+    cover = models.ImageField(
+        upload_to='cover/%Y/%m/',
+        verbose_name='海报封面',
+        blank=True,
+        null=True,
+        help_text='存储在 media/cover/ 目录下的海报图片'
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 

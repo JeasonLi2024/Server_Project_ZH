@@ -22,6 +22,16 @@ app.conf.beat_schedule = {
         'task': 'authentication.tasks.process_scheduled_account_deletions',
         'schedule': crontab(hour=0, minute=0),  # 每日零点执行
     },
+    # 每天凌晨3点全量校对向量库
+    'sync-requirement-vectors-daily': {
+        'task': 'project.tasks.sync_all_requirement_vectors',
+        'schedule': crontab(hour=3, minute=0),
+    },
+    # 每天凌晨2点清理临时封面图片
+    'cleanup-temp-cover-images-daily': {
+        'task': 'project.tasks.cleanup_temp_cover_images',
+        'schedule': crontab(hour=2, minute=0),
+    },
     # 每天上午9点发送删除提醒邮件
     'send-deletion-reminder-emails': {
         'task': 'authentication.tasks.send_deletion_reminder_emails',

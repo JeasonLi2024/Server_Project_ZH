@@ -2,6 +2,8 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.conf import settings
 from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+import requests
 from .models import Requirement, Resource, File, RequirementFavorite, get_requirement_file_path, get_resource_file_path, generate_unique_filename
 from user.models import Tag1, Tag2, OrganizationUser
 from organization.models import Organization
@@ -322,7 +324,7 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
             'id', 'title', 'brief', 'description', 'tag1', 'tag2', 'status',
             'organization', 'publish_people', 'finish_time',
             'budget', 'people_count', 'support_provided', 'evaluation_criteria', 'views',
-            'resources', 'files', 'related_projects', 'total_project_members', 'total_project',
+            'resources', 'files', 'cover', 'related_projects', 'total_project_members', 'total_project',
             'evaluation_published', 'is_favorited', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'views', 'evaluation_published', 'is_favorited', 'created_at', 'updated_at']
@@ -426,6 +428,16 @@ class RequirementBaseSerializer(TagValidationMixin, FileHandlingMixin, serialize
         default=False,
         help_text="是否保持文件夹结构（自动调整：virtual_folder_path为'/'时为true，否则为false）"
     )
+    cover_file = serializers.ImageField(
+        write_only=True, 
+        required=False, 
+        help_text="用户上传的本地图片文件"
+    )
+    cover_url = serializers.URLField(
+        write_only=True, 
+        required=False, 
+        help_text="用户选中的AI生成图片URL"
+    )
     
     class Meta:
         model = Requirement
@@ -433,9 +445,77 @@ class RequirementBaseSerializer(TagValidationMixin, FileHandlingMixin, serialize
             'title', 'brief', 'description', 'status', 'organization',
             'finish_time', 'budget', 'people_count', 'support_provided', 'evaluation_criteria_id',
             'tag1_ids', 'tag2_ids', 'resource_ids', 'files_ids', 'files',
-            'cloud_links', 'virtual_folder_path', 'maintain_structure'
+            'cloud_links', 'virtual_folder_path', 'maintain_structure',
+            'cover_file', 'cover_url'
         ]
         abstract = True
+    
+    def _process_cover_url(self, cover_url):
+        """处理封面URL（支持本地临时文件移动和远程文件下载）"""
+        if not cover_url:
+            return None
+            
+        import urllib.parse
+        
+        # 1. 检查是否是本地临时文件 (/cover/tmp/)
+        # 统一路径分隔符为正斜杠进行检查
+        normalized_url = cover_url.replace('\\', '/')
+        if '/cover/tmp/' in normalized_url:
+            try:
+                # 解析路径
+                parsed_url = urllib.parse.urlparse(normalized_url)
+                path = parsed_url.path
+                
+                # 提取文件名
+                filename = os.path.basename(path)
+                
+                # 构建本地绝对路径
+                temp_path = os.path.join(settings.MEDIA_ROOT, 'cover', 'tmp', filename)
+                
+                if os.path.exists(temp_path):
+                    # 读取文件内容
+                    with open(temp_path, 'rb') as f:
+                        content = f.read()
+                        
+                    # 创建 ContentFile
+                    # 使用新文件名（uuid）
+                    new_file_name = f"{uuid.uuid4().hex}.png"
+                    content_file = ContentFile(content, name=new_file_name)
+                    
+                    # 清理同批次临时文件
+                    # 文件名格式: {batch_id}_{idx}.png
+                    try:
+                        batch_id = filename.split('_')[0]
+                        temp_dir = os.path.dirname(temp_path)
+                        for f in os.listdir(temp_dir):
+                            if f.startswith(batch_id + '_'):
+                                try:
+                                    os.remove(os.path.join(temp_dir, f))
+                                except OSError:
+                                    pass
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"清理临时封面失败: {e}")
+                        
+                    return content_file
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"处理本地临时封面失败: {e}")
+                
+        # 2. 远程文件下载
+        try:
+            response = requests.get(cover_url, timeout=30)
+            if response.status_code == 200:
+                file_name = f"{uuid.uuid4().hex}.jpg"
+                return ContentFile(response.content, name=file_name)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"下载封面图片失败: {str(e)}")
+            
+        return None
     
     def validate_organization(self, value):
         """验证组织权限"""
@@ -667,6 +747,18 @@ class RequirementCreateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
         virtual_folder_path = validated_data.pop('virtual_folder_path', '/')
         maintain_structure = validated_data.pop('maintain_structure', False)
         
+        # 提取封面数据
+        cover_file = validated_data.pop('cover_file', None)
+        cover_url = validated_data.pop('cover_url', None)
+        
+        # 处理封面
+        if cover_file:
+            validated_data['cover'] = cover_file
+        elif cover_url:
+            processed_cover = self._process_cover_url(cover_url)
+            if processed_cover:
+                validated_data['cover'] = processed_cover
+        
         # 自动调整 maintain_structure：当 virtual_folder_path 为默认值 "/" 时设为 true，否则设为 false
         maintain_structure = (virtual_folder_path == "/")
         
@@ -742,7 +834,7 @@ class RequirementUpdateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
         fields = [
             'title', 'brief', 'description', 'status', 'organization',
             'finish_time', 'budget', 'people_count', 'support_provided', 'evaluation_criteria_id',
-            'tag1_ids', 'tag2_ids', 'resource_ids'
+            'tag1_ids', 'tag2_ids', 'resource_ids', 'cover_file', 'cover_url'
         ]
         extra_kwargs = BaseFieldsMixin.get_requirement_extra_kwargs()
     
@@ -772,6 +864,19 @@ class RequirementUpdateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
             tag1_ids = validated_data.pop('tag1_ids', None)
             tag2_ids = validated_data.pop('tag2_ids', None)
             resource_ids = validated_data.pop('resource_ids', None)
+            
+            # 提取封面数据
+            cover_file = validated_data.pop('cover_file', None)
+            cover_url = validated_data.pop('cover_url', None)
+            
+            # 处理封面更新
+            if cover_file:
+                instance.cover = cover_file
+            elif cover_url:
+                processed_cover = self._process_cover_url(cover_url)
+                if processed_cover:
+                    # save=False 避免立即保存导致多次写库
+                    instance.cover.save(processed_cover.name, processed_cover, save=False)
             
             # 状态判断逻辑：当前状态为审核失败时重置为待审核
             if 'status' not in validated_data and instance.status == 'review_failed':

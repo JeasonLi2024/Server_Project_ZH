@@ -12,6 +12,7 @@ router.register(r'virtual-files', VirtualFileViewSet, basename='virtual-files')
 urlpatterns = [
     # 需求管理接口
     path('requirement/', views.create_requirement, name='create_requirement'),  # POST - 发布需求
+    path('requirement/poster/generate/', views.generate_poster, name='generate_poster'),  # POST - 生成需求海报
     path('requirement/list/', views.list_requirements, name='list_requirements'),  # GET - 获取需求列表
     path('requirement/statistics/', views.get_requirement_statistics, name='get_requirement_statistics'),  # GET - 获取需求统计
     path('requirement/favorite/', views.toggle_requirement_favorite, name='toggle_requirement_favorite'),  # POST - 切换需求收藏状态

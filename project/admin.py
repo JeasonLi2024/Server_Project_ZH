@@ -15,6 +15,33 @@ class RequirementAdmin(admin.ModelAdmin):
     ordering = ['-created_at']
     
     
+    actions = ['make_published', 'make_under_review', 'make_paused']
+
+    def make_published(self, request, queryset):
+        """批量设置为进行中"""
+        # 遍历保存以触发 signal 同步向量
+        for obj in queryset:
+            obj.status = 'in_progress'
+            obj.save()
+        self.message_user(request, f"{queryset.count()} 个需求已标记为进行中。")
+    make_published.short_description = "标记为进行中"
+
+    def make_under_review(self, request, queryset):
+        """批量设置为审核中"""
+        for obj in queryset:
+            obj.status = 'under_review'
+            obj.save()
+        self.message_user(request, f"{queryset.count()} 个需求已标记为审核中。")
+    make_under_review.short_description = "标记为审核中"
+
+    def make_paused(self, request, queryset):
+        """批量设置为暂停"""
+        for obj in queryset:
+            obj.status = 'paused'
+            obj.save()
+        self.message_user(request, f"{queryset.count()} 个需求已暂停。")
+    make_paused.short_description = "标记为暂停"
+
     def get_student_projects_count(self, obj):
         """显示关联的学生项目总数"""
         return obj.student_projects.count()

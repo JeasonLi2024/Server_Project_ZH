@@ -18,6 +18,7 @@ from .serializers import (
 )
 from common_utils import APIResponse, format_validation_errors, paginate_queryset, build_media_url
 from django.utils import timezone
+from .ai_utils import generate_poster_images, save_temp_images
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,14 @@ def create_requirement(request):
     - file_ids: 文件ID列表 (可选)
     """
     try:
+        # 如果是前端表单直接提交，通常不会传status，默认为under_review
+        # 如果是Agent或其他方式，可以显式传 'draft'
+        
+        # 验证status是否合法
+        status = request.data.get('status')
+        if status and status not in [choice[0] for choice in Requirement.STATUS_CHOICES]:
+             return APIResponse.validation_error(f"无效的状态: {status}")
+
         serializer = RequirementCreateSerializer(
             data=request.data, 
             context={'request': request}
@@ -173,15 +182,8 @@ def create_requirement(request):
         with transaction.atomic():
             requirement = serializer.save()
             
-            # 检查是否有PDF文件需要处理
-            pdf_files = []
-            for file_obj in requirement.files.all():
-                if not file_obj.is_folder and file_obj.name.lower().endswith('.pdf'):
-                    pdf_files.append(file_obj)
-            
-            # 如果有PDF文件，调用PDF处理服务
-            if pdf_files:
-                _process_requirement_pdfs(requirement.id, pdf_files)
+            # 这里的显式 PDF 处理已移除，转由 project/signals.py 中的 m2m_changed 和 post_save 自动处理
+            # 这样可以统一管理 Semantic Embeddings 和 Raw Docs 的同步逻辑，并支持多种文件格式
             
             # 使用详情序列化器返回完整信息
             detail_serializer = RequirementSerializer(
@@ -201,47 +203,8 @@ def create_requirement(request):
             '发布需求失败，请稍后重试',
             errors={'exception': str(e)}
         )
-def _process_requirement_pdfs(requirement_id, pdf_files):
-    """
-    处理需求相关的PDF文件，直接调用PDF处理函数进行向量化存储
-    
-    参数:
-    - requirement_id: 需求ID，作为PDF处理的pid参数
-    - pdf_files: PDF文件对象列表
-    """
-    try:
-        # 导入PDF处理函数
-        from process_pdf.pdf_chunk_milvus import process_pdf
-        
-        for pdf_file in pdf_files:
-            try:
-                # 检查文件是否有实际存储路径
-                if not pdf_file.real_path:
-                    logger.warning(f"PDF文件 {pdf_file.name} 的实际路径为空，跳过处理")
-                    continue
-                
-                # 构建完整的文件路径
-                from django.conf import settings
-                full_file_path = os.path.join(settings.MEDIA_ROOT, pdf_file.real_path)
-                
-                if not os.path.exists(full_file_path):
-                    logger.warning(f"PDF文件 {pdf_file.name} 的实际路径不存在: {full_file_path}，跳过处理")
-                    continue
-                
-                # 直接调用PDF处理函数
-                result = process_pdf(full_file_path, requirement_id)
-                
-                if result.get('status') == 'success':
-                    logger.info(f"PDF文件 {pdf_file.name} 处理成功，需求ID: {requirement_id}，分块数: {result.get('chunks', 0)}")
-                else:
-                    logger.error(f"PDF文件 {pdf_file.name} 处理失败: {result.get('error', '未知错误')}")
-                        
-            except Exception as file_error:
-                logger.error(f"处理PDF文件 {pdf_file.name} 时发生错误: {str(file_error)}")
-                continue
-                
-    except Exception as e:
-        logger.error(f"批量处理PDF文件时发生错误: {str(e)}")
+# 辅助函数 _process_requirement_pdfs 已弃用，逻辑移至 project/services.py:sync_raw_docs_auto
+
 
 
 @api_view(['PUT', 'PATCH'])
@@ -1672,3 +1635,50 @@ def check_requirement_favorite_status(request, requirement_id):
     except Exception as e:
         logger.error(f"检查收藏状态失败: {str(e)}")
         return APIResponse.server_error("检查收藏状态失败，请稍后重试")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_poster(request):
+    """
+    生成需求海报接口
+    
+    根据需求标题、简介、标签和风格生成海报图片。
+    
+    请求参数:
+    - title: 需求标题 (必填)
+    - brief: 需求简介 (必填)
+    - tags: 标签列表 (可选)
+    - style: 风格 (可选，默认'default')
+    
+    返回:
+    - images: 生成的图片URL列表
+    """
+    try:
+        title = request.data.get('title')
+        brief = request.data.get('brief')
+        tags = request.data.get('tags', [])
+        style = request.data.get('style', 'default')
+        
+        if not title or not brief:
+            return APIResponse.validation_error("标题和简介不能为空")
+            
+        # 调用AI生图工具
+        image_urls = generate_poster_images(title, brief, tags, style)
+        
+        if not image_urls:
+            return APIResponse.server_error("图片生成失败，请稍后重试")
+            
+        # 保存临时图片
+        local_urls = save_temp_images(image_urls, request)
+        
+        return APIResponse.success({
+            'images': local_urls
+        }, "海报生成成功")
+        
+    except Exception as e:
+        logger.error(f"生成海报失败: {str(e)}")
+        return APIResponse.server_error(
+            '生成海报失败，请稍后重试',
+            errors={'exception': str(e)}
+        )
