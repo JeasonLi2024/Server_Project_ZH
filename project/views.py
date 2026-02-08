@@ -1678,14 +1678,12 @@ def generate_poster(request):
             return APIResponse.validation_error("标题和简介不能为空")
             
         # 调用AI生图工具
-        image_urls = generate_poster_images(title, brief, tags, style)
+        # 注意：现在 generate_poster_images 内部处理下载，所以直接返回本地URL
+        local_urls = generate_poster_images(title, brief, tags, style, request=request)
         
-        if not image_urls:
+        if not local_urls:
             return APIResponse.server_error("图片生成失败，请稍后重试")
             
-        # 保存临时图片
-        local_urls = save_temp_images(image_urls, request)
-        
         return APIResponse.success({
             'images': local_urls
         }, "海报生成成功")

@@ -69,7 +69,7 @@ def get_embeddings(texts):
         logger.error(f"获取向量表示失败: {e}")
         return [[0.0] * settings.EMBEDDING_DIM for _ in texts]
 
-# 6. 从 Milvus 检索 (已弃用，请使用 milvus_cache_service.py 中的缓存版本)
+# 6. 从 Milvus 检索 (已弃用)
 def search_in_milvus(Pids, top_k=5):
     """
     原始的 Milvus 检索函数，已被新的连接管理器版本替代。

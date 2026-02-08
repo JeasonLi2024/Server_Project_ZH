@@ -134,40 +134,50 @@ def build_media_url(file_path_or_field, request=None, default_url=None):
             return f"{clean_prefix}/{clean_url}"
         return url
 
+    def finalize_url(url):
+        if not url:
+            return url
+            
+        # 先应用路径前缀
+        url_with_prefix = apply_prefix(url)
+        
+        # 如果已经是完整URL，直接返回（除了HTTPS强制）
+        if url_with_prefix.startswith(('http://', 'https://')):
+            final_url = url_with_prefix
+        else:
+            # 应用域名配置
+            media_host = getattr(settings, 'MEDIA_HOST', '')
+            if media_host:
+                clean_host = media_host.rstrip('/')
+                clean_url = url_with_prefix.lstrip('/')
+                final_url = f"{clean_host}/{clean_url}"
+            elif request:
+                final_url = request.build_absolute_uri(url_with_prefix)
+            else:
+                final_url = url_with_prefix
+            
+        # 强制HTTPS
+        if getattr(settings, 'MEDIA_FORCE_HTTPS', False) and final_url.startswith('http://'):
+            final_url = 'https://' + final_url[len('http://'):]
+        return final_url
+
     # 处理None值
     if not file_path_or_field:
         if default_url:
-            if request:
-                return request.build_absolute_uri(default_url)
-            return default_url
+            return finalize_url(default_url)
         return None
     
     # 处理Django FileField对象
     if hasattr(file_path_or_field, 'url'):
         try:
-            file_url = file_path_or_field.url
-            if request:
-                final_url = request.build_absolute_uri(apply_prefix(file_url))
-            else:
-                final_url = apply_prefix(file_url)
-            if getattr(settings, 'MEDIA_FORCE_HTTPS', False) and final_url.startswith('http://'):
-                final_url = 'https://' + final_url[len('http://'):]
-            return final_url
+            return finalize_url(file_path_or_field.url)
         except ValueError:
-            # FileField没有文件时会抛出ValueError
             if default_url:
-                if request:
-                    final_url = request.build_absolute_uri(apply_prefix(default_url))
-                else:
-                    final_url = apply_prefix(default_url)
-                if getattr(settings, 'MEDIA_FORCE_HTTPS', False) and final_url.startswith('http://'):
-                    final_url = 'https://' + final_url[len('http://'):]
-                return final_url
+                return finalize_url(default_url)
             return None
     
     # 处理字符串路径
     if isinstance(file_path_or_field, str):
-        # 如果已经是完整URL，直接返回
         if file_path_or_field.startswith(('http://', 'https://')):
             return file_path_or_field
         
@@ -177,23 +187,11 @@ def build_media_url(file_path_or_field, request=None, default_url=None):
         else:
             file_url = file_path_or_field
         
-        if request:
-            final_url = request.build_absolute_uri(apply_prefix(file_url))
-        else:
-            final_url = apply_prefix(file_url)
-        if getattr(settings, 'MEDIA_FORCE_HTTPS', False) and final_url.startswith('http://'):
-            final_url = 'https://' + final_url[len('http://'):]
-        return final_url
+        return finalize_url(file_url)
     
     # 其他情况返回默认值
     if default_url:
-        if request:
-            final_url = request.build_absolute_uri(apply_prefix(default_url))
-        else:
-            final_url = apply_prefix(default_url)
-        if getattr(settings, 'MEDIA_FORCE_HTTPS', False) and final_url.startswith('http://'):
-            final_url = 'https://' + final_url[len('http://'):]
-        return final_url
+        return finalize_url(default_url)
     return None
 
 

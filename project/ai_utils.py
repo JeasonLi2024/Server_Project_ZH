@@ -4,6 +4,7 @@ import requests
 import uuid
 from django.conf import settings
 from volcenginesdkarkruntime import Ark
+from volcenginesdkarkruntime.types.images.images import SequentialImageGenerationOptions
 from common_utils import build_media_url
 
 logger = logging.getLogger(__name__)
@@ -17,18 +18,46 @@ STYLE_PROMPTS = {
     '3d': 'C4D渲染风格，3D立体模型，柔和光照，材质细腻，现代感，抽象艺术'
 }
 
-def generate_poster_images(title, brief, tags, style='default'):
+import concurrent.futures
+
+# ... existing code ...
+
+def download_image(url, temp_dir, idx, batch_id, request=None):
+    """
+    下载单张图片的辅助函数
+    """
+    try:
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            file_name = f"{batch_id}_{idx}.png"
+            file_path = os.path.join(temp_dir, file_name)
+            
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
+            
+            relative_path = f"cover/tmp/{file_name}"
+            return build_media_url(relative_path, request)
+        else:
+            logger.error(f"Failed to download image from {url}, status: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"Exception downloading image from {url}: {e}")
+        return None
+
+def generate_poster_images(title, brief, tags, style='default', request=None):
     """
     调用 Doubao-Seedream-4.5 生成海报图片 (使用 volcenginesdkarkruntime)
+    并实时并行下载图片
     
     Args:
         title (str): 需求标题
         brief (str): 需求简介
         tags (str/list): 标签
         style (str): 风格代码
+        request: 请求对象，用于构建本地URL
         
     Returns:
-        list: 生成的图片URL列表
+        list: 本地图片URL列表
     """
     # 从环境变量获取 API Key
     api_key = os.environ.get('ARK_API_KEY')
@@ -42,7 +71,6 @@ def generate_poster_images(title, brief, tags, style='default'):
         raise Exception("未配置 AI 服务密钥 (ARK_API_KEY)")
 
     # 初始化客户端
-    # base_url 必须配置为 https://ark.cn-beijing.volces.com/api/v3
     client = Ark(
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         api_key=api_key
@@ -64,88 +92,76 @@ def generate_poster_images(title, brief, tags, style='default'):
         f"4. 质量：高分辨率，细节丰富，无模糊噪点。"
     )
     
-    try:
-        # 调用图片生成 API
-        # Model ID 优先从环境变量获取，默认为 doubao-seedream-4-5-251128
-        model_id = os.environ.get('ARK_MODEL_ENDPOINT', "doubao-seedream-4-5-251128")
-        
-        logger.info(f"Generating poster with model: {model_id}")
-        
-        completion = client.images.generate(
-            model=model_id,
-            prompt=prompt,
-            size="2K",  # 官方推荐 2K 或 4K
-            response_format="url",
-            watermark=False,
-            # 使用 extra_body 传递额外参数以支持组图生成 (需模型支持)
-            extra_body={
-                "sequential_image_generation": "auto",
-                "sequential_image_generation_options": {
-                    "max_images": 4 
-                }
-            }
-        )
-        
-        images = []
-        if completion.data:
-            for item in completion.data:
-                if item.url:
-                    images.append(item.url)
-        
-        if not images:
-             logger.warning(f"API返回成功但无图片数据")
-             
-        return images
-
-    except Exception as e:
-        logger.error(f"海报生成服务异常: {e}")
-        # 抛出更友好的错误信息
-        raise Exception(f"海报生成服务异常: {str(e)}")
-
-
-def save_temp_images(image_urls, request=None):
-    """
-    保存临时图片到本地 media/cover/tmp 目录
-    
-    Args:
-        image_urls (list): 图片URL列表
-        request (HttpRequest): 请求对象，用于构建绝对URL
-        
-    Returns:
-        list: 本地图片URL列表
-    """
-    if not image_urls:
-        return []
-        
-    # 确保临时目录存在
+    # 准备下载目录
     temp_rel_dir = os.path.join('cover', 'tmp')
     temp_dir = os.path.join(settings.MEDIA_ROOT, temp_rel_dir)
     os.makedirs(temp_dir, exist_ok=True)
     
-    batch_id = uuid.uuid4().hex
     local_urls = []
+    futures = []
     
-    for idx, url in enumerate(image_urls):
-        try:
-            # 下载图片
-            response = requests.get(url, timeout=30)
-            if response.status_code == 200:
-                # 保存到临时文件
-                file_name = f"{batch_id}_{idx}.png"
-                file_path = os.path.join(temp_dir, file_name)
-                
-                with open(file_path, 'wb') as f:
-                    f.write(response.content)
-                
-                # 构建本地URL
-                # 使用正斜杠构建相对路径，确保URL格式正确
-                relative_path = f"cover/tmp/{file_name}"
-                # 使用 common_utils 中的 build_media_url 构建完整 URL
-                local_url = build_media_url(relative_path, request)
-                local_urls.append(local_url)
-            else:
-                logger.error(f"Failed to download image from {url}, status: {response.status_code}")
-        except Exception as e:
-            logger.error(f"Exception downloading image from {url}: {e}")
+    # 生成统一的 batch_id，用于后续清理同批次未选中的图片
+    batch_id = uuid.uuid4().hex
+    
+    try:
+        # 调用图片生成 API
+        model_id = os.environ.get('ARK_MODEL_ENDPOINT', "doubao-seedream-4-5-251128")
+        logger.info(f"Generating poster with model: {model_id}")
+        
+        stream = client.images.generate(
+            model=model_id,
+            prompt=prompt,
+            size="2K",
+            response_format="url",
+            watermark=False,
+            sequential_image_generation="auto",
+            sequential_image_generation_options=SequentialImageGenerationOptions(max_images=4),
+            stream=True
+        )
+        
+        image_idx = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            for event in stream:
+                if event is None:
+                    continue
+                if event.type == "image_generation.partial_failed":
+                    logger.error(f"Stream generate images error: {event.error}")
+                    if event.error is not None:
+                         code = event.error.code
+                         if hasattr(code, 'equal'):
+                             if code.equal("InternalServiceError"):
+                                 break
+                         elif str(code) == "InternalServiceError":
+                             break
+                elif event.type == "image_generation.partial_succeeded":
+                    if event.error is None and event.url:
+                        logger.info(f"recv.Size: {event.size}, recv.Url: {event.url}")
+                        # 提交下载任务，传入 batch_id
+                        futures.append(executor.submit(download_image, event.url, temp_dir, image_idx, batch_id, request))
+                        image_idx += 1
+                elif event.type == "image_generation.completed":
+                    if event.error is None:
+                        logger.info(f"Final completed event. Usage: {event.usage}")
             
-    return local_urls
+            # 等待所有下载任务完成
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    local_urls.append(result)
+        
+        if not local_urls:
+             logger.warning(f"API返回成功但无图片被成功下载")
+             
+        return local_urls
+
+    except Exception as e:
+        logger.error(f"海报生成服务异常: {e}")
+        raise Exception(f"海报生成服务异常: {str(e)}")
+
+# Remove the old save_temp_images function as it is now integrated or handle compatibility if needed
+# Keeping a simplified version or alias if other parts use it, but logic is moved inside generate_poster_images
+def save_temp_images(image_urls, request=None):
+    # This function is kept for backward compatibility if needed, 
+    # but the new flow handles downloading inside generate_poster_images
+    return [] 
+

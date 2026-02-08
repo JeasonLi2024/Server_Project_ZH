@@ -317,6 +317,8 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
     evaluation_criteria = serializers.SerializerMethodField()
     # 收藏状态字段
     is_favorited = serializers.SerializerMethodField()
+    # 封面URL
+    cover = serializers.SerializerMethodField()
     
     class Meta:
         model = Requirement
@@ -328,6 +330,13 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
             'evaluation_published', 'is_favorited', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'views', 'evaluation_published', 'is_favorited', 'created_at', 'updated_at']
+    
+    def get_cover(self, obj):
+        """获取封面URL"""
+        if obj.cover:
+            request = self.context.get('request')
+            return build_media_url(obj.cover, request)
+        return None
     
     def get_tag1(self, obj):
         """获取兴趣标签列表"""

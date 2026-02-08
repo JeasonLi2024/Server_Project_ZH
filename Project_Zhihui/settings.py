@@ -192,6 +192,8 @@ MEDIA_ROOT = BASE_DIR / "media"
 PROXY_PATH_PREFIX = os.getenv("PROXY_PATH_PREFIX", "")
 # 媒体文件强制HTTPS
 MEDIA_FORCE_HTTPS = os.getenv("MEDIA_FORCE_HTTPS", "False").lower() == "true"
+# 媒体文件强制域名 (例如: https://zhihui.bupt.edu.cn)
+MEDIA_HOST = os.getenv("MEDIA_HOST", "")
 
 # 文件上传限制
 FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024  # 5MB
