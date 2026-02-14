@@ -140,6 +140,12 @@ app.conf.beat_schedule = {
         'schedule': crontab(hour=8, minute=30),  # 每日上午8点30分执行
     },
 
+    # 每5分钟同步一次需求浏览量（Redis缓冲 -> MySQL）
+    'sync-requirement-views-every-5-mins': {
+        'task': 'project.tasks.sync_requirement_views_to_db',
+        'schedule': 300.0,  # 每5分钟 (300秒)
+    },
+
 }
 
 app.conf.timezone = settings.TIME_ZONE

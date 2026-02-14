@@ -1,5 +1,6 @@
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from .models import Requirement
 from .services import get_or_create_collection, delete_requirement_vectors, sync_requirement_vectors, sync_raw_docs_auto
 import logging
@@ -11,6 +12,97 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_EMBEDDINGS = 'project_embeddings'
 COLLECTION_RAW_DOCS = 'project_raw_docs'
+
+@shared_task
+def sync_requirement_views_to_db():
+    """
+    定时任务：将 Redis 中的需求浏览量缓冲同步回 MySQL
+    建议执行频率：每 5 分钟执行一次
+    """
+    logger.info("Starting sync_requirement_views_to_db task...")
+    try:
+        # 1. 扫描 Redis 中所有浏览量缓冲的 key
+        # 注意：keys 命令在生产环境慎用，如果 key 数量巨大建议使用 scan_iter
+        # pattern: requirement_views_buffer_*
+        if hasattr(cache, 'keys'):
+            keys = cache.keys("requirement_views_buffer_*")
+        elif hasattr(cache, 'iter_keys'):
+            keys = list(cache.iter_keys("requirement_views_buffer_*"))
+        else:
+            # 如果 cache backend 不支持 keys/iter_keys (如 Memcached)，则无法自动扫描
+            # 需要在写入时维护一个 key 集合，这里假设是 Redis
+            # 尝试使用 django-redis 的原生 client
+            try:
+                from django_redis import get_redis_connection
+                con = get_redis_connection("default")
+                # 使用 scan_iter 避免阻塞
+                keys = [k.decode('utf-8') for k in con.scan_iter("requirement_views_buffer_*")]
+            except ImportError:
+                logger.warning("django-redis not installed or keys not supported, skipping sync.")
+                return "Skipped (backend not supported)"
+
+        if not keys:
+            logger.info("No views to sync.")
+            return "No views to sync"
+
+        count = 0
+        for key in keys:
+            try:
+                # 解析 requirement_id
+                # key format: requirement_views_buffer_123
+                # 注意：django-redis 的 keys 可能会带上前缀 (prefix:version:key)
+                # 这里做简单处理，提取最后一部分数字
+                import re
+                match = re.search(r'requirement_views_buffer_(\d+)', key)
+                if not match:
+                    continue
+                
+                req_id = int(match.group(1))
+                
+                # 获取并删除 key (原子操作 getset 或者 get + delete)
+                # 为防止并发丢失，使用 getset (getset 将 key 设为 0 并返回旧值)
+                # 但 cache 接口通常没有 getset，这里使用 get + delete 的简单策略
+                # 风险：在 get 和 delete 之间如果有新写入，会丢失这部分计数
+                # 优化策略：使用 pipeline 或者 lua 脚本，或者只 decr
+                
+                # 简单策略：读取 -> 数据库 + N -> Redis decr N
+                # 这样即使有新写入，也只会保留在 Redis 中等待下次同步
+                
+                # 获取当前缓冲值
+                views_to_add = cache.get(key)
+                if not views_to_add:
+                    continue
+                
+                views_to_add = int(views_to_add)
+                
+                if views_to_add > 0:
+                    # 更新数据库 (F 表达式原子更新)
+                    Requirement.objects.filter(id=req_id).update(views=F('views') + views_to_add)
+                    
+                    # Redis 中减去已同步的值 (decr)
+                    try:
+                        cache.decr(key, views_to_add)
+                        # 如果减到 0 或负数，删除 key 以节省空间
+                        # (由于并发，可能减完后变成负数或者还有剩余，这里简单判断)
+                        new_val = cache.get(key)
+                        if new_val is not None and int(new_val) <= 0:
+                            cache.delete(key)
+                    except Exception:
+                        # 如果不支持 decr，直接 delete (会有微小丢失风险)
+                        cache.delete(key)
+                    
+                    count += 1
+            except Exception as e:
+                logger.error(f"Error syncing key {key}: {e}")
+                continue
+                
+        logger.info(f"Synced views for {count} requirements.")
+        return f"Synced {count} requirements"
+        
+    except Exception as e:
+        logger.error(f"Error in sync_requirement_views_to_db: {e}")
+        return f"Error: {e}"
+
 
 @shared_task
 def sync_all_requirement_vectors():

@@ -3,8 +3,8 @@ import pytz
 import os
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.db.models import F, Q, Count, Sum, Case, When, IntegerField
-from django.db.models.functions import TruncWeek, Cast
+from django.db.models import F, Q, Count, Sum, Case, When, IntegerField, FloatField
+from django.db.models.functions import TruncWeek, Cast, Log
 from datetime import datetime, timedelta
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -19,6 +19,7 @@ from .serializers import (
 from common_utils import APIResponse, format_validation_errors, paginate_queryset, build_media_url
 from django.utils import timezone
 from .ai_utils import generate_poster_images, save_temp_images
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -465,11 +466,52 @@ def get_requirement(request, requirement_id):
             id=requirement_id
         )
         
-        # 当学生用户访问时增加浏览量（使用原子操作确保并发安全）
-        if request.user.user_type == 'student':
-            Requirement.objects.filter(id=requirement_id).update(views=F('views') + 1)
-            # 刷新对象以获取最新的浏览量
-            requirement.refresh_from_db(fields=['views'])
+        # 增加浏览量（使用Redis缓冲 + 异步写入策略）
+        # 防抖机制：同一用户在24小时内访问同一需求只计算一次浏览量
+        
+        # 记录用户已访问标记
+        user_viewed_key = f"requirement_viewed_{requirement_id}_{request.user.id}"
+        has_viewed = cache.get(user_viewed_key)
+        
+        if not has_viewed:
+            # 如果未访问过，增加浏览量并设置访问标记
+            try:
+                # 1. 设置访问标记，有效期24小时
+                cache.set(user_viewed_key, 1, timeout=86400)
+                
+                # 2. 写入 Redis 增量
+                cache_key = f"requirement_views_buffer_{requirement_id}"
+                
+                # 使用 incr 原子操作，如果 key 不存在会自动创建并初始化为 0 后加 1
+                # timeout 设置为 None 表示不过期（或者设置一个较长时间，如 24 小时）
+                # 注意：Django 的 cache backend 可能会有不同的 incr 行为，Redis backend 通常支持
+                try:
+                    cache.incr(cache_key, 1)
+                except ValueError:
+                    # 如果 key 不存在，incr 可能会抛出 ValueError (取决于后端实现)
+                    # 或者如果 key 存在但不是 int 类型
+                    cache.set(cache_key, 1, timeout=86400)
+                except Exception:
+                     # 尝试降级
+                    current_val = cache.get(cache_key, 0)
+                    cache.set(cache_key, int(current_val) + 1, timeout=86400)
+            except Exception as e:
+                logger.warning(f"Redis 浏览量写入失败: {str(e)}")
+                # 再次降级：直接写库（兜底）
+                # 注意：直接写库会失去防抖的高效性，但在Redis失败时是必要的
+                Requirement.objects.filter(id=requirement_id).update(views=F('views') + 1)
+                requirement.refresh_from_db(fields=['views'])
+        else:
+            logger.info(f"用户 {request.user.id} 在24小时内已访问过需求 {requirement_id}，跳过浏览量增加")
+        
+        # 2. 读时合并：从 Redis 获取增量，叠加到数据库的 views 上
+        try:
+            cache_key = f"requirement_views_buffer_{requirement_id}"
+            buffer_views = cache.get(cache_key, 0)
+            if buffer_views:
+                requirement.views += int(buffer_views)
+        except Exception:
+            pass  # 读取缓存失败不影响主流程
         
         # 序列化返回
         serializer = RequirementSerializer(
@@ -505,6 +547,7 @@ def list_requirements(request):
     - time: 需求发布时间筛选（支持单日和范围筛选，格式：YYYY-MM-DD 或 start_date-end_date）
     - status: 需求状态筛选
     - organization_id: 组织ID筛选
+    - publisher_id: 发布者用户ID筛选（用于获取特定用户发布的需求）
     - sort_type: 排序字段（title/time/view）
     - sort_order: 排序方式（up升序/down降序）
     - keyword: 搜索关键词（可从需求标题、描述、tag1和tag2中模糊检索）
@@ -535,6 +578,15 @@ def list_requirements(request):
         if organization_id:
             try:
                 queryset = queryset.filter(organization_id=int(organization_id))
+            except (ValueError, TypeError):
+                pass
+        
+        # 发布者筛选（新增）
+        publisher_id = request.GET.get('publisher_id')
+        if publisher_id:
+            try:
+                # 筛选 publish_people (OrganizationUser) 关联的 user 的 id
+                queryset = queryset.filter(publish_people__user_id=int(publisher_id))
             except (ValueError, TypeError):
                 pass
         
@@ -658,30 +710,153 @@ def list_requirements(request):
             queryset = queryset.filter(search_q).distinct()
         
         # 排序处理（针对海量数据优化）
-        sort_type = request.GET.get('sort_type', 'time')  # 默认按时间排序
+        sort_type = request.GET.get('sort_type')
+        # 如果未指定排序方式，根据用户类型设置默认值
+        if not sort_type:
+            # 智能排序策略：学生用户默认使用推荐排序，其他用户默认按时间排序
+            if request.user.is_authenticated and getattr(request.user, 'user_type', '') == 'student':
+                sort_type = 'recommend'
+            else:
+                sort_type = 'time'
+
         sort_order = request.GET.get('sort_order', 'down')  # 默认降序
         
-        # 构建排序字段
-        sort_field_map = {
-            'title': 'title',
-            'time': 'created_at',  # 使用数据库时间戳字段，有索引
-            'view': 'views'
-        }
-        
-        sort_field = sort_field_map.get(sort_type, 'created_at')
-        if sort_order == 'up':
-            order_by = sort_field
-        else:
-            order_by = f'-{sort_field}'
-        
-        # 应用排序，使用数据库索引优化
-        queryset = queryset.order_by(order_by)
+        # 推荐排序逻辑（仅针对学生用户）
+        if sort_type == 'recommend' and request.user.is_authenticated and getattr(request.user, 'user_type', '') == 'student':
+            # 获取分页参数用于生成缓存键
+            try:
+                page_num = int(request.GET.get('page', 1))
+                page_size_num = int(request.GET.get('page_size', 10))
+            except (ValueError, TypeError):
+                page_num = 1
+                page_size_num = 10
+
+            # 缓存键：推荐结果缓存_用户ID_页码_每页数量
+            # 缓存有效期：5分钟 (300秒)，因为推荐结果不需要秒级实时，但需保证相对新鲜
+            cache_key = f"recommend_list_{request.user.id}_{page_num}_{page_size_num}"
+            cached_data = cache.get(cache_key)
+            
+            if cached_data:
+                # 如果命中缓存，直接使用缓存数据
+                # 但需要重新获取实时浏览量
+                try:
+                    page_req_ids = [req['id'] for req in cached_data['requirements']]
+                    if page_req_ids:
+                        cache_keys = [f"requirement_views_buffer_{rid}" for rid in page_req_ids]
+                        if hasattr(cache, 'get_many'):
+                            buffer_data = cache.get_many(cache_keys)
+                        else:
+                            buffer_data = {k: cache.get(k) for k in cache_keys}
+                        
+                        # 更新浏览量显示
+                        for req in cached_data['requirements']:
+                            key = f"requirement_views_buffer_{req['id']}"
+                            buffer_val = buffer_data.get(key, 0)
+                            if buffer_val:
+                                req['views'] += int(buffer_val)
+                except Exception:
+                    pass
+                
+                return APIResponse.success(cached_data, "获取需求列表成功(Cache)")
+
+            try:
+                student = request.user.student_profile
+                # 获取ID列表
+                skill_ids = list(student.skills.values_list('id', flat=True))
+                interest_ids = list(student.interests.values_list('id', flat=True))
+                
+                # 冷启动处理：如果用户没有标签（新用户），使用热度排序 + 时间排序
+                if not skill_ids and not interest_ids:
+                    # 定义时间节点
+                    now = timezone.now()
+                    three_days_ago = now - timedelta(days=3)
+                    seven_days_ago = now - timedelta(days=7)
+                    
+                    logger.info(f"用户 {request.user.id} 触发冷启动推荐策略")
+                    # 修改策略：
+                    # 1. 新需求（3天内）优先，帮助新需求曝光 (Item Cold Start)
+                    # 2. 热门需求（高浏览）保底，确保内容质量 (User Cold Start)
+                    # 3. 混合排序：
+                    #    - freshness_score: 3天内=50, 7天内=20
+                    #    - hot_score: log10(views+1)*5
+                    #    这样可以让新发布的（即使0浏览）也能排在前面，解决新需求冷启动
+                    
+                    queryset = queryset.annotate(
+                        freshness_score=Case(
+                            When(created_at__gte=three_days_ago, then=50),
+                            When(created_at__gte=seven_days_ago, then=20),
+                            default=0,
+                            output_field=IntegerField()
+                        ),
+                        hot_score=Log(F('views') + 1, 10) * 5
+                    ).annotate(
+                        total_score=F('freshness_score') + F('hot_score')
+                    ).order_by('-total_score', '-created_at')
+                    
+                    # 标记为冷启动，后续生成推荐理由时使用
+                    is_cold_start = True
+                else:
+                    is_cold_start = False
+                    # 时间节点计算
+                    now = timezone.now()
+                    three_days_ago = now - timedelta(days=3)
+                    seven_days_ago = now - timedelta(days=7)
+                    
+                    # 构造评分注解
+                    # 1. 技能匹配分 (10分/个)
+                    # 2. 兴趣匹配分 (5分/个)
+                    # 3. 新鲜度加分 (3天+20, 7天+10)
+                    # 4. 热度加分 log10(views + 1) * 2
+                    
+                    queryset = queryset.annotate(
+                        skill_score=Count('tag2', filter=Q(tag2__id__in=skill_ids)) * 10,
+                        interest_score=Count('tag1', filter=Q(tag1__id__in=interest_ids)) * 5,
+                        freshness_score=Case(
+                            When(created_at__gte=three_days_ago, then=20),
+                            When(created_at__gte=seven_days_ago, then=10),
+                            default=0,
+                            output_field=IntegerField()
+                        ),
+                        # Log(views+1, 10) -> log10
+                        hot_score=Log(F('views') + 1, 10) * 2
+                    ).annotate(
+                        # 汇总总分
+                        total_score=F('skill_score') + F('interest_score') + F('freshness_score') + F('hot_score')
+                    )
+                    
+                    # 应用排序：优先按总分降序，同分按时间降序
+                    queryset = queryset.order_by('-total_score', '-created_at')
+                
+            except Exception as e:
+                logger.warning(f"推荐排序计算失败，降级为时间排序: {str(e)}")
+                # 降级处理
+                sort_type = 'time'
+                
+        # 如果不是推荐排序或推荐排序失败，使用常规排序
+        if sort_type != 'recommend':
+            # 构建排序字段
+            sort_field_map = {
+                'title': 'title',
+                'time': 'created_at',  # 使用数据库时间戳字段，有索引
+                'view': 'views'
+            }
+            
+            sort_field = sort_field_map.get(sort_type, 'created_at')
+            if sort_order == 'up':
+                order_by = sort_field
+            else:
+                order_by = f'-{sort_field}'
+            
+            # 应用排序，使用数据库索引优化
+            queryset = queryset.order_by(order_by)
         
         # 使用通用分页工具
         pagination_result = paginate_queryset(request, queryset, default_page_size=10)
         paginator = pagination_result['paginator']
         page_data = pagination_result['page_data']
         pagination_info = pagination_result['pagination_info']
+        paginator_page = pagination_info['current_page']
+        paginator_page_size = pagination_info['page_size']
         
         # 预取收藏状态数据，避免N+1查询
         favorited_requirements = set()
@@ -694,7 +869,64 @@ def list_requirements(request):
                     requirement_id__in=requirement_ids
                 ).values_list('requirement_id', flat=True)
             )
-        
+
+        # 3. 批量读时合并：将 Redis 中的浏览量增量合并到列表数据中
+        try:
+            # 收集本页所有需求的 ID
+            page_req_ids = [req.id for req in page_data]
+            if page_req_ids:
+                # 构造所有 keys
+                cache_keys = [f"requirement_views_buffer_{rid}" for rid in page_req_ids]
+                # 批量获取 (如果 cache backend 支持 get_many)
+                if hasattr(cache, 'get_many'):
+                    buffer_data = cache.get_many(cache_keys)
+                else:
+                    buffer_data = {k: cache.get(k) for k in cache_keys}
+                
+                # 更新内存中的对象 (不存库)
+                for req in page_data:
+                    key = f"requirement_views_buffer_{req.id}"
+                    buffer_val = buffer_data.get(key, 0)
+                    if buffer_val:
+                        req.views += int(buffer_val)
+        except Exception as e:
+            logger.warning(f"列表页批量合并浏览量失败: {str(e)}")
+
+        # 4. 生成推荐理由（仅针对推荐排序）
+        if sort_type == 'recommend':
+            for req in page_data:
+                reasons = []
+                
+                # 如果是冷启动模式，只显示热门或近期
+                if 'is_cold_start' in locals() and is_cold_start:
+                    if req.views > 9:
+                        reasons.append("热门需求")
+                    # 判断近期
+                    try:
+                        req_date = req.created_at.date() if hasattr(req.created_at, 'date') else req.created_at
+                        if (timezone.now().date() - req_date).days <= 7:
+                            reasons.append("近期发布")
+                    except Exception:
+                        pass
+                else:
+                    # 检查评分注解是否存在
+                    if getattr(req, 'skill_score', 0) > 0:
+                        reasons.append("技能匹配")
+                    if getattr(req, 'interest_score', 0) > 0:
+                        reasons.append("兴趣匹配")
+                    if getattr(req, 'freshness_score', 0) > 0:
+                        reasons.append("近期发布")
+                    
+                    # 热门需求：浏览量产生的热度分
+                    # Log10(views+1)*2. 
+                    # 例如 100浏览量 -> log10(101)≈2 -> score=4
+                    # 设置一个显示阈值，避免所有有浏览量的都显示"热门"
+                    # 这里暂定 hot_score > 2 (即浏览量 > 9) 时显示
+                    if getattr(req, 'hot_score', 0) > 2:
+                        reasons.append("热门需求")
+                
+                req.recommendation_reason = reasons
+
         # 序列化
         serializer = RequirementSerializer(
             page_data,
@@ -705,10 +937,18 @@ def list_requirements(request):
             }
         )
         
-        return APIResponse.success({
+        response_data = {
             'requirements': serializer.data,
             'pagination': pagination_info
-        }, "获取需求列表成功")
+        }
+        
+        # 如果是推荐排序，写入缓存
+        if sort_type == 'recommend' and request.user.is_authenticated and getattr(request.user, 'user_type', '') == 'student':
+             # 缓存键：推荐结果缓存_用户ID_页码_每页数量
+             cache_key = f"recommend_list_{request.user.id}_{paginator_page}_{paginator_page_size}"
+             cache.set(cache_key, response_data, timeout=300) # 5分钟有效期
+
+        return APIResponse.success(response_data, "获取需求列表成功")
         
     except Exception as e:
         logger.error(f"获取需求列表失败: {str(e)}")

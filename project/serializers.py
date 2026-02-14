@@ -319,6 +319,8 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
     is_favorited = serializers.SerializerMethodField()
     # 封面URL
     cover = serializers.SerializerMethodField()
+    # 推荐理由（仅在推荐排序时返回）
+    recommendation_reason = serializers.SerializerMethodField()
     
     class Meta:
         model = Requirement
@@ -327,10 +329,14 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
             'organization', 'publish_people', 'finish_time',
             'budget', 'people_count', 'support_provided', 'evaluation_criteria', 'views',
             'resources', 'files', 'cover', 'related_projects', 'total_project_members', 'total_project',
-            'evaluation_published', 'is_favorited', 'created_at', 'updated_at'
+            'evaluation_published', 'is_favorited', 'recommendation_reason', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'views', 'evaluation_published', 'is_favorited', 'created_at', 'updated_at']
     
+    def get_recommendation_reason(self, obj):
+        """获取推荐理由"""
+        return getattr(obj, 'recommendation_reason', None)
+
     def get_cover(self, obj):
         """获取封面URL"""
         if obj.cover:
@@ -742,7 +748,9 @@ class RequirementCreateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
     class Meta:
         model = Requirement
         fields = BaseFieldsMixin.get_requirement_fields() + ['resource_ids']
-        extra_kwargs = BaseFieldsMixin.get_requirement_extra_kwargs()
+        extra_kwargs = BaseFieldsMixin.get_requirement_extra_kwargs(
+            required_fields=['title', 'brief', 'description']
+        )
     
     def create(self, validated_data):
         """创建需求"""
