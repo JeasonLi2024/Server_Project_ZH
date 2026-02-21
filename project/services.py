@@ -98,79 +98,278 @@ class EmbeddingService:
             
             # 如果所有文本都有缓存，直接返回
             if not uncached_texts:
-                result = [None] * len(texts)
-                for i, embedding in cached_embeddings:
-                    result[i] = embedding
-                return result
-            
-            # 获取未缓存的向量
-            new_embeddings = EmbeddingService._fetch_embeddings(uncached_texts)
-            
-            # 缓存新获取的向量
-            for i, text in enumerate(uncached_texts):
-                if i < len(new_embeddings):
-                    cache_key = f"embedding:v4:{hash(text)}"
-                    cache.set(cache_key, new_embeddings[i], timeout=3600)  # 缓存1小时
-            
-            # 合并结果
-            result = [None] * len(texts)
-            for i, embedding in cached_embeddings:
-                result[i] = embedding
-            for i, idx in enumerate(uncached_indices):
-                if i < len(new_embeddings):
-                    result[idx] = new_embeddings[i]
-            
-            return result
+                return [emb for _, emb in cached_embeddings]
         else:
-            return EmbeddingService._fetch_embeddings(texts)
-    
-    @staticmethod
-    def _fetch_embeddings(texts):
+            uncached_texts = texts
+            uncached_indices = range(len(texts))
+            cached_embeddings = []
+
+        # 调用 API 获取未缓存的 embeddings
         try:
             client = EmbeddingService.get_dashscope_client()
+            resp = client.embeddings.create(
+                model=DEFAULT_EMBEDDING_MODEL,
+                input=uncached_texts,
+                dimensions=DEFAULT_EMBEDDING_DIM
+            )
             
-            # 批量处理
-            batch_size = 10
-            all_embeddings = []
+            new_embeddings = []
+            for i, item in enumerate(resp.data):
+                idx = uncached_indices[i]
+                embedding = item.embedding
+                new_embeddings.append((idx, embedding))
+                
+                # 写入缓存
+                if use_cache:
+                    cache_key = f"embedding:v4:{hash(uncached_texts[i])}"
+                    cache.set(cache_key, embedding, timeout=86400 * 7) # 7天
             
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i+batch_size]
-                try:
-                    response = client.embeddings.create(
-                        model=DEFAULT_EMBEDDING_MODEL,
-                        input=batch,
-                        dimensions=DEFAULT_EMBEDDING_DIM
-                    )
-                    
-                    batch_embeddings = [None] * len(batch)
-                    for item in response.data:
-                         if item.index < len(batch):
-                             batch_embeddings[item.index] = item.embedding
-                             
-                    all_embeddings.extend(batch_embeddings)
-                    
-                except Exception as batch_error:
-                    logger.error(f"[Embedding Batch ERROR] {batch_error}")
-                    all_embeddings.extend([None] * len(batch))
+            # 合并结果
+            all_embeddings = cached_embeddings + new_embeddings
+            all_embeddings.sort(key=lambda x: x[0])
             
-            final_embeddings = []
-            for emb in all_embeddings:
-                if emb is None:
-                    final_embeddings.append([0.0] * DEFAULT_EMBEDDING_DIM)
-                else:
-                    final_embeddings.append(emb)
-
-            logger.info(f"[Embedding] 成功获取 {len(final_embeddings)} 个向量 (v4)")
-            return final_embeddings
-
+            return [emb for _, emb in all_embeddings]
+            
         except Exception as e:
-            logger.error(f"[Embedding ERROR] {e}")
-            return [[0.0] * DEFAULT_EMBEDDING_DIM for _ in texts]
-    
+            logger.error(f"DashScope Embedding API Error: {e}")
+            return []
+
     @staticmethod
     def get_single_embedding(text, use_cache=True):
         embeddings = EmbeddingService.get_embeddings([text], use_cache=use_cache)
         return embeddings[0] if embeddings else [0.0] * DEFAULT_EMBEDDING_DIM
+
+class RecommendationService:
+    """
+    推荐系统核心服务类
+    封装双路召回、动态画像计算、合并打分等逻辑
+    """
+    
+    @staticmethod
+    def get_dynamic_tags(user_id, min_score=2.0):
+        """获取用户动态标签 (高分标签)"""
+        from django.core.cache import cache
+        
+        dynamic_tag1_ids = [] # 兴趣/领域
+        dynamic_tag2_ids = [] # 技能
+        
+        try:
+            redis_key = f"user:dynamic_tags:{user_id}"
+            # 获取 Redis client
+            redis_client = None
+            if hasattr(cache, 'client') and hasattr(cache.client, 'get_client'):
+                redis_client = cache.client.get_client()
+            elif hasattr(cache, '_cache') and hasattr(cache._cache, 'get_client'):
+                redis_client = cache._cache.get_client()
+                
+            if redis_client:
+                all_tags = redis_client.hgetall(redis_key)
+                # 筛选出 score >= min_score 的标签
+                for field, score in all_tags.items():
+                    try:
+                        field_str = field.decode('utf-8') if isinstance(field, bytes) else field
+                        score_val = float(score)
+                        if score_val >= min_score:
+                            if field_str.startswith('tag1_'):
+                                dynamic_tag1_ids.append(int(field_str.split('_')[1]))
+                            elif field_str.startswith('tag2_'):
+                                dynamic_tag2_ids.append(int(field_str.split('_')[1]))
+                    except (ValueError, IndexError):
+                        pass
+        except Exception as e:
+            logger.warning(f"获取动态标签失败: {e}")
+            
+        return dynamic_tag1_ids, dynamic_tag2_ids
+
+    @staticmethod
+    def calculate_user_vector(user_id, student_profile):
+        """计算用户查询向量 (静态 + 动态融合)"""
+        from django.core.cache import cache
+        from user.services import UserHistoryService
+        from project.milvus_utils import get_vectors_by_ids, generate_embedding
+        import numpy as np
+        
+        user_vector_cache_key = f"user_query_vector_{user_id}"
+        user_query_vector = cache.get(user_vector_cache_key)
+
+        if not user_query_vector:
+            try:
+                # 1.1 静态画像文本
+                skill_names = list(student_profile.skills.values_list('post', flat=True))
+                interest_names = list(student_profile.interests.values_list('value', flat=True))
+                static_profile_text = f"User Interests: {', '.join(interest_names)}\nUser Skills: {', '.join(skill_names)}"
+                
+                # 1.2 获取最近浏览历史 (动态部分)
+                recent_viewed_ids = UserHistoryService.get_recent_viewed_items(user_id, limit=5)
+                
+                # 1.3 计算向量
+                # A. 静态向量
+                static_vector = generate_embedding(static_profile_text)
+                
+                # B. 动态向量 (最近浏览的平均值)
+                dynamic_vector = None
+                if recent_viewed_ids:
+                    recent_vectors_data = get_vectors_by_ids(recent_viewed_ids)
+                    # Extract vectors
+                    vec_list = []
+                    for item in recent_vectors_data:
+                        if 'vector' in item and item['vector']:
+                            vec_list.append(item['vector'])
+                    
+                    if vec_list:
+                        # Calculate average
+                        dynamic_vector = np.mean(vec_list, axis=0).tolist()
+                
+                # C. 融合 (α = 0.3, 30% Static, 70% Dynamic)
+                if static_vector and dynamic_vector:
+                    alpha = 0.3
+                    user_query_vector = (np.array(static_vector) * alpha + np.array(dynamic_vector) * (1 - alpha)).tolist()
+                elif dynamic_vector:
+                    user_query_vector = dynamic_vector
+                else:
+                    user_query_vector = static_vector
+                    
+                # Cache user vector (10 mins)
+                if user_query_vector:
+                    cache.set(user_vector_cache_key, user_query_vector, 600)
+                    
+            except Exception as e:
+                logger.error(f"构建用户动态向量失败: {e}")
+                user_query_vector = None
+        
+        return user_query_vector
+
+    @staticmethod
+    def generate_candidates(user_id, student_profile=None):
+        """
+        生成推荐候选集 (核心逻辑)
+        返回: candidate_ids (List[int])
+        """
+        from django.core.cache import cache
+        from django.utils import timezone
+        from django.db.models import Count, Q, F, Case, When, IntegerField, Value
+        from django.db.models.functions import Log
+        from datetime import timedelta
+        from project.models import Requirement
+        from user.services import UserHistoryService
+        from project.milvus_utils import search_similar_requirements
+        
+        try:
+            # 准备数据
+            if not student_profile:
+                from user.models import Student
+                student_profile = Student.objects.select_related('user').get(user_id=user_id)
+                
+            skill_ids = list(student_profile.skills.values_list('id', flat=True))
+            interest_ids = list(student_profile.interests.values_list('id', flat=True))
+            
+            # === 1. 构建用户动态查询向量 ===
+            user_query_vector = RecommendationService.calculate_user_vector(user_id, student_profile)
+
+            # === 2. A路召回 (语义路) ===
+            path_a_results = {} # {id: similarity_score}
+            if user_query_vector:
+                try:
+                    # Search Top 200
+                    milvus_results = search_similar_requirements(user_query_vector, top_k=200)
+                    path_a_results = {pid: score for pid, score in milvus_results}
+                except Exception as e:
+                    logger.error(f"A路召回失败: {e}")
+                    path_a_results = {}
+
+            # === 3. B路召回 (规则路) & 基础数据准备 ===
+            # 获取动态标签
+            dynamic_tag1_ids, dynamic_tag2_ids = RecommendationService.get_dynamic_tags(user_id)
+            
+            combined_skill_ids = list(set(skill_ids + dynamic_tag2_ids))
+            combined_interest_ids = list(set(interest_ids + dynamic_tag1_ids))
+            
+            # 获取 A 路召回的 ID 集合
+            path_a_ids = list(path_a_results.keys())
+            
+            # B 路评分逻辑
+            base_qs = Requirement.objects.all()
+            
+            now = timezone.now()
+            three_days_ago = now - timedelta(days=3)
+            seven_days_ago = now - timedelta(days=7)
+            
+            if not combined_skill_ids and not combined_interest_ids:
+                # 冷启动 B 路
+                b_qs = base_qs.annotate(
+                    freshness_score=Case(
+                        When(created_at__gte=three_days_ago, then=50),
+                        When(created_at__gte=seven_days_ago, then=20),
+                        default=0,
+                        output_field=IntegerField()
+                    ),
+                    hot_score=Log(F('views') + 1, 10) * 5,
+                    static_score=F('freshness_score') + F('hot_score')
+                ).order_by('-static_score', '-created_at')
+            else:
+                # 常规 B 路
+                b_qs = base_qs.annotate(
+                    skill_score=Count('tag2', filter=Q(tag2__id__in=combined_skill_ids)) * 10,
+                    interest_score=Count('tag1', filter=Q(tag1__id__in=combined_interest_ids)) * 5,
+                    freshness_score=Case(
+                        When(created_at__gte=three_days_ago, then=20),
+                        When(created_at__gte=seven_days_ago, then=10),
+                        default=0,
+                        output_field=IntegerField()
+                    ),
+                    hot_score=Log(F('views') + 1, 10) * 2,
+                    static_score=F('skill_score') + F('interest_score') + F('freshness_score') + F('hot_score')
+                ).order_by('-static_score', '-created_at')
+
+            # 获取 B 路 Top 200
+            path_b_results = list(b_qs.values('id', 'static_score')[:200])
+            path_b_map = {item['id']: item['static_score'] for item in path_b_results}
+            
+            # === 4. 双路合并与打分 ===
+            # 需要计算 A 路召回但未在 B 路 Top 200 中的需求的 static_score
+            only_a_ids = [pid for pid in path_a_ids if pid not in path_b_map]
+            
+            if only_a_ids:
+                only_a_qs = b_qs.filter(id__in=only_a_ids).values('id', 'static_score')
+                for item in only_a_qs:
+                    path_b_map[item['id']] = item['static_score']
+
+            # 统一打分
+            final_scores = []
+            all_ids = set(list(path_a_results.keys()) + list(path_b_map.keys()))
+            
+            # 获取已读历史用于去重/降权
+            viewed_ids = UserHistoryService.get_all_viewed_ids(user_id, 'requirement')
+
+            for pid in all_ids:
+                static_s = path_b_map.get(pid, 0)
+                if static_s is None:
+                    static_s = 0
+                vector_s = path_a_results.get(pid, 0)
+                if vector_s is None:
+                    vector_s = 0
+                
+                # 双路合并公式
+                final_s = static_s + (vector_s * 50)
+                
+                # 软去重：已读内容沉底
+                if pid in viewed_ids:
+                    final_s -= 1000
+                
+                final_scores.append((pid, final_s))
+            
+            # 排序 (降序)
+            final_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            # === 5. 缓存结果 ===
+            # 截取 Top 300 ID
+            candidate_ids = [pid for pid, score in final_scores[:300]]
+            
+            return candidate_ids
+            
+        except Exception as e:
+            logger.error(f"双路推荐算法执行失败 (Service): {str(e)}")
+            return []
 
 def generate_embedding(text):
     """
@@ -469,3 +668,58 @@ def delete_requirement_vectors(requirement_id, collection_names=None):
                 logger.info(f"Deleted vectors for requirement {requirement_id} in {name}")
         except Exception as e:
             logger.error(f"Error deleting vectors for requirement {requirement_id} in {name}: {e}")
+
+def search_similar_requirements(query_vector, top_k=200):
+    """
+    使用向量搜索相似需求 (A路召回)
+    """
+    ensure_milvus_connection()
+    try:
+        collection = Collection(COLLECTION_EMBEDDINGS)
+        collection.load()
+        
+        search_params = {
+            "metric_type": "COSINE",
+            "params": {"nprobe": 10},
+        }
+        
+        results = collection.search(
+            data=[query_vector],
+            anns_field="vector",
+            param=search_params,
+            limit=top_k,
+            expr=None,
+            output_fields=["id"]
+        )
+        
+        # Parse results: [(id, score), ...]
+        ret = []
+        for hits in results:
+            for hit in hits:
+                ret.append((hit.id, hit.score))
+        return ret
+    except Exception as e:
+        logger.error(f"Milvus search failed: {e}")
+        return []
+
+def get_vectors_by_ids(ids):
+    """
+    批量获取指定ID的向量 (用于计算动态画像)
+    """
+    if not ids:
+        return []
+    
+    ensure_milvus_connection()
+    try:
+        collection = Collection(COLLECTION_EMBEDDINGS)
+        collection.load()
+        
+        res = collection.query(
+            expr=f"project_id in {ids}",
+            output_fields=["project_id", "vector"]
+        )
+        # res is a list of dicts: [{'project_id': 1, 'vector': [...]}, ...]
+        return res
+    except Exception as e:
+        logger.error(f"Milvus query vectors failed: {e}")
+        return []

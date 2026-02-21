@@ -1,6 +1,7 @@
 import logging
 import pytz
 import os
+import hashlib
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import F, Q, Count, Sum, Case, When, IntegerField, FloatField
@@ -22,6 +23,13 @@ from .ai_utils import generate_poster_images, save_temp_images
 from django.core.cache import cache
 
 from user.services import UserHistoryService
+from project.services import (
+    search_similar_requirements, 
+    get_vectors_by_ids, 
+    generate_embedding,
+    EmbeddingService
+)
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +486,13 @@ def get_requirement(request, requirement_id):
         # 记录浏览历史 (Redis ZSet) - 无论是否增加浏览量，只要访问了就记录（更新时间戳）
         UserHistoryService.record_view(request.user.id, requirement_id, 'requirement')
         
+        # 异步更新动态标签权重
+        try:
+            from project.tasks import update_user_dynamic_tags_task
+            update_user_dynamic_tags_task.delay(request.user.id, requirement_id, 'view')
+        except Exception as e:
+            logger.error(f"触发动态标签更新任务失败: {e}")
+        
         if not has_viewed:
             # 如果未访问过，增加浏览量并设置访问标记
             try:
@@ -736,34 +751,57 @@ def list_requirements(request):
                 page_num = 1
                 page_size_num = 10
 
-            # 缓存键：推荐结果缓存_用户ID_页码_每页数量
-            # 缓存有效期：5分钟 (300秒)，因为推荐结果不需要秒级实时，但需保证相对新鲜
-            cache_key = f"recommend_list_{request.user.id}_{page_num}_{page_size_num}"
-            cached_data = cache.get(cache_key)
+            # -------------------------------------------------------------------------
+            # 新逻辑：双路召回 (Dual-Path Retrieval) 与 动态画像 (Dynamic User Profiling)
+            # 使用 RecommendationService 统一处理
+            # -------------------------------------------------------------------------
             
-            if cached_data:
-                # 如果命中缓存，直接使用缓存数据
-                # 但需要重新获取实时浏览量
+            # 候选集缓存键：仅与用户ID相关，与筛选条件无关
+            candidate_cache_key = f"recommend_candidates_{request.user.id}"
+            candidate_ids = cache.get(candidate_cache_key)
+            
+            if not candidate_ids:
                 try:
-                    page_req_ids = [req['id'] for req in cached_data['requirements']]
-                    if page_req_ids:
-                        cache_keys = [f"requirement_views_buffer_{rid}" for rid in page_req_ids]
-                        if hasattr(cache, 'get_many'):
-                            buffer_data = cache.get_many(cache_keys)
-                        else:
-                            buffer_data = {k: cache.get(k) for k in cache_keys}
-                        
-                        # 更新浏览量显示
-                        for req in cached_data['requirements']:
-                            key = f"requirement_views_buffer_{req['id']}"
-                            buffer_val = buffer_data.get(key, 0)
-                            if buffer_val:
-                                req['views'] += int(buffer_val)
-                except Exception:
-                    pass
-                
-                return APIResponse.success(cached_data, "获取需求列表成功(Cache)")
+                    # 调用 Service 生成候选集
+                    from project.services import RecommendationService
+                    candidate_ids = RecommendationService.generate_candidates(request.user.id)
+                    
+                    # 写入缓存 (10分钟)
+                    if candidate_ids:
+                        cache.set(candidate_cache_key, candidate_ids, 600)
+                    
+                except Exception as e:
+                    logger.error(f"双路推荐算法执行失败 (View): {str(e)}")
+                    candidate_ids = []
 
+            # 将当前的 queryset (已经应用了 filter) 限制在候选集范围内
+            # 这就是 "在推荐结果中筛选" 的核心：取交集
+            if candidate_ids:
+                queryset = queryset.filter(id__in=candidate_ids)
+                
+                # 保持推荐顺序
+                # 使用 Case/When 按照 candidate_ids 中的顺序排序
+                preserved_order = Case(*[When(id=pk, then=pos) for pos, pk in enumerate(candidate_ids)])
+                queryset = queryset.order_by(preserved_order)
+            else:
+                # 如果候选集为空（极端情况），或者生成失败，降级为不限制范围，但依然按照时间排序
+                queryset = queryset.order_by('-created_at')
+
+
+            # -------------------------------------------------------------------------
+            # 缓存处理：缓存最终的分页结果 (包含筛选状态)
+            # -------------------------------------------------------------------------
+            
+            # 由于 "分页结果缓存" 容易导致筛选状态不一致、缓存键复杂且维护成本高，
+            # 且我们已经引入了 "候选集缓存" 来分担计算压力，
+            # 这里的第二层缓存可以移除，以确保数据实时性和筛选的准确性。
+            
+            # (移除原有的 cached_data 获取逻辑)
+
+            # 如果没有命中页面缓存，继续执行后续的分页和序列化逻辑
+            # 注意：下面的 annotate 逻辑其实对于排序已经不再需要了（因为我们已经强制指定了顺序），
+            # 但是为了生成 recommendation_reason，我们还是需要计算分数的上下文
+            
             try:
                 # 获取用户浏览历史（用于去重）
                 # 注意：这里我们获取全量历史ID，UserHistoryService 已经限制了 ZSet 最大长度为 1000
@@ -778,28 +816,49 @@ def list_requirements(request):
                 skill_ids = list(student.skills.values_list('id', flat=True))
                 interest_ids = list(student.interests.values_list('id', flat=True))
                 
-                # 冷启动处理：如果用户没有标签（新用户），使用热度排序 + 时间排序
-                if not skill_ids and not interest_ids:
-                    # 定义时间节点
+                # 重新获取动态标签 (因为 view 可能会有延迟更新，这里再次读取可能也读不到最新的，
+                # 但为了逻辑一致性，还是应该合并动态标签。或者为了性能直接复用上面的 combined_ids?)
+                # 鉴于上面逻辑很长，这里直接复制获取逻辑或重构
+                
+                dynamic_tag1_ids = []
+                dynamic_tag2_ids = []
+                try:
+                    redis_key = f"user:dynamic_tags:{request.user.id}"
+                    redis_client = None
+                    if hasattr(cache, 'client') and hasattr(cache.client, 'get_client'):
+                        redis_client = cache.client.get_client()
+                    elif hasattr(cache, '_cache') and hasattr(cache._cache, 'get_client'):
+                        redis_client = cache._cache.get_client()
+                        
+                    if redis_client:
+                        all_tags = redis_client.hgetall(redis_key)
+                        for field, score in all_tags.items():
+                            try:
+                                field_str = field.decode('utf-8') if isinstance(field, bytes) else field
+                                score_val = float(score)
+                                if score_val >= 2.0:
+                                    if field_str.startswith('tag1_'):
+                                        dynamic_tag1_ids.append(int(field_str.split('_')[1]))
+                                    elif field_str.startswith('tag2_'):
+                                        dynamic_tag2_ids.append(int(field_str.split('_')[1]))
+                            except:
+                                pass
+                except:
+                    pass
+
+                combined_skill_ids = list(set(skill_ids + dynamic_tag2_ids))
+                combined_interest_ids = list(set(interest_ids + dynamic_tag1_ids))
+                
+                # 重新计算一次分数，仅用于生成推荐理由 (reasons)
+                # 排序已经由 candidate_ids 决定了，这里不再 order_by
+                
+                # 冷启动处理
+                if not combined_skill_ids and not combined_interest_ids:
                     now = timezone.now()
                     three_days_ago = now - timedelta(days=3)
                     seven_days_ago = now - timedelta(days=7)
                     
-                    logger.info(f"用户 {request.user.id} 触发冷启动推荐策略")
-                    # 修改策略：
-                    # 1. 新需求（3天内）优先，帮助新需求曝光 (Item Cold Start)
-                    # 2. 热门需求（高浏览）保底，确保内容质量 (User Cold Start)
-                    # 3. 混合排序：
-                    #    - freshness_score: 3天内=50, 7天内=20
-                    #    - hot_score: log10(views+1)*5
-                    #    这样可以让新发布的（即使0浏览）也能排在前面，解决新需求冷启动
-                    
                     queryset = queryset.annotate(
-                        is_viewed=Case(
-                            When(id__in=viewed_ids or [], then=1),
-                            default=0,
-                            output_field=IntegerField()
-                        ),
                         freshness_score=Case(
                             When(created_at__gte=three_days_ago, then=50),
                             When(created_at__gte=seven_days_ago, then=20),
@@ -807,58 +866,33 @@ def list_requirements(request):
                             output_field=IntegerField()
                         ),
                         hot_score=Log(F('views') + 1, 10) * 5
-                    ).annotate(
-                        total_score=F('freshness_score') + F('hot_score')
-                    ).order_by('is_viewed', '-total_score', '-created_at')
-                    
-                    # 标记为冷启动，后续生成推荐理由时使用
+                    )
                     is_cold_start = True
                 else:
                     is_cold_start = False
-                    # 时间节点计算
                     now = timezone.now()
                     three_days_ago = now - timedelta(days=3)
                     seven_days_ago = now - timedelta(days=7)
                     
-                    # 构造评分注解
-                    # 1. 技能匹配分 (10分/个)
-                    # 2. 兴趣匹配分 (5分/个)
-                    # 3. 新鲜度加分 (3天+20, 7天+10)
-                    # 4. 热度加分 log10(views + 1) * 2
-                    
                     queryset = queryset.annotate(
-                        is_viewed=Case(
-                            When(id__in=viewed_ids or [], then=1),
-                            default=0,
-                            output_field=IntegerField()
-                        ),
-                        skill_score=Count('tag2', filter=Q(tag2__id__in=skill_ids)) * 10,
-                        interest_score=Count('tag1', filter=Q(tag1__id__in=interest_ids)) * 5,
+                        skill_score=Count('tag2', filter=Q(tag2__id__in=combined_skill_ids)) * 10,
+                        interest_score=Count('tag1', filter=Q(tag1__id__in=combined_interest_ids)) * 5,
                         freshness_score=Case(
                             When(created_at__gte=three_days_ago, then=20),
                             When(created_at__gte=seven_days_ago, then=10),
                             default=0,
                             output_field=IntegerField()
                         ),
-                        # Log(views+1, 10) -> log10
                         hot_score=Log(F('views') + 1, 10) * 2
-                    ).annotate(
-                        # 汇总总分
-                        total_score=F('skill_score') + F('interest_score') + F('freshness_score') + F('hot_score')
                     )
                     
-                    # 应用排序：
-                    # 1. is_viewed: 未读(0)优先，已读(1)沉底
-                    # 2. total_score: 总分降序
-                    # 3. created_at: 时间降序
-                    queryset = queryset.order_by('is_viewed', '-total_score', '-created_at')
-                
             except Exception as e:
-                logger.warning(f"推荐排序计算失败，降级为时间排序: {str(e)}")
+                logger.warning(f"推荐理由上下文计算失败: {str(e)}")
                 # 降级处理
                 sort_type = 'time'
                 
         # 如果不是推荐排序或推荐排序失败，使用常规排序
+
         if sort_type != 'recommend':
             # 构建排序字段
             sort_field_map = {
@@ -936,20 +970,26 @@ def list_requirements(request):
                         pass
                 else:
                     # 检查评分注解是否存在
+                    has_static_match = False
                     if (getattr(req, 'skill_score', 0) or 0) > 0:
                         reasons.append("技能匹配")
+                        has_static_match = True
                     if (getattr(req, 'interest_score', 0) or 0) > 0:
                         reasons.append("兴趣匹配")
+                        has_static_match = True
                     if (getattr(req, 'freshness_score', 0) or 0) > 0:
                         reasons.append("近期发布")
+                        has_static_match = True
                     
                     # 热门需求：浏览量产生的热度分
-                    # Log10(views+1)*2. 
-                    # 例如 100浏览量 -> log10(101)≈2 -> score=4
-                    # 设置一个显示阈值，避免所有有浏览量的都显示"热门"
-                    # 这里暂定 hot_score > 2 (即浏览量 > 9) 时显示
                     if (getattr(req, 'hot_score', 0) or 0) > 2:
                         reasons.append("热门需求")
+                        has_static_match = True
+                        
+                    # 如果没有静态匹配理由，且不是冷启动，则可能是语义推荐
+                    # 我们没有直接传递 vector_score 到这里，但可以推断
+                    if not has_static_match and not reasons:
+                        reasons.append("语义推荐")
                 
                 req.recommendation_reason = reasons
 
@@ -969,10 +1009,8 @@ def list_requirements(request):
         }
         
         # 如果是推荐排序，写入缓存
-        if sort_type == 'recommend' and request.user.is_authenticated and getattr(request.user, 'user_type', '') == 'student':
-             # 缓存键：推荐结果缓存_用户ID_页码_每页数量
-             cache_key = f"recommend_list_{request.user.id}_{paginator_page}_{paginator_page_size}"
-             cache.set(cache_key, response_data, timeout=300) # 5分钟有效期
+        # (已移除第二层分页缓存，仅保留候选集缓存)
+
 
         return APIResponse.success(response_data, "获取需求列表成功")
         
@@ -1798,6 +1836,13 @@ def toggle_requirement_favorite(request):
                 student=user.student_profile,
                 requirement=requirement
             )
+            
+            # 异步更新动态标签权重 (action='favorite')
+            try:
+                from project.tasks import update_user_dynamic_tags_task
+                update_user_dynamic_tags_task.delay(user.id, requirement_id, 'favorite')
+            except Exception as e:
+                logger.error(f"触发动态标签更新任务失败: {e}")
             
             # 返回收藏信息
             from .serializers import RequirementFavoriteSerializer

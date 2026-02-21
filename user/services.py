@@ -129,3 +129,29 @@ class UserHistoryService:
         except Exception as e:
             logger.error(f"获取全量浏览历史失败: {e}")
             return set()
+
+    @classmethod
+    def get_recent_viewed_items(cls, user_id, item_type='requirement', limit=5):
+        """
+        获取最近浏览的 N 个项目 ID (用于计算动态画像)
+        """
+        try:
+            key = cls._get_history_key(user_id, item_type)
+            redis_client = None
+            if hasattr(cache, 'client') and hasattr(cache.client, 'get_client'):
+                redis_client = cache.client.get_client()
+            elif hasattr(cache, '_cache') and hasattr(cache._cache, 'get_client'):
+                redis_client = cache._cache.get_client()
+                
+            if not redis_client:
+                return []
+                
+            # ZREVRANGE: 获取指定范围的元素（按分数倒序）
+            item_ids = redis_client.zrevrange(key, 0, limit - 1)
+            
+            # 转换为 int 列表
+            return [int(i) for i in item_ids]
+            
+        except Exception as e:
+            logger.error(f"获取最近浏览记录失败: {e}")
+            return []

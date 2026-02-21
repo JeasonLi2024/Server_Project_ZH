@@ -1,7 +1,7 @@
 from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import F
+from django.db.models import F, Q
 from .models import Requirement
 from .services import get_or_create_collection, delete_requirement_vectors, sync_requirement_vectors, sync_raw_docs_auto
 import logging
@@ -251,3 +251,151 @@ def delete_requirement_vectors_task(requirement_id):
         delete_requirement_vectors(requirement_id)
     except Exception as e:
         logger.error(f"Error in delete_requirement_vectors_task: {e}")
+
+@shared_task
+def update_user_dynamic_tags_task(user_id, requirement_id, action_type):
+    """
+    更新用户动态标签权重
+    action_type: 'view' (+1), 'favorite' (+3), 'apply' (+5)
+    """
+    if not user_id or not requirement_id:
+        return
+        
+    try:
+        from django.core.cache import cache
+        from project.models import Requirement
+        import random
+        
+        # 1. 获取需求标签
+        try:
+            req = Requirement.objects.prefetch_related('tag1', 'tag2').get(id=requirement_id)
+        except Requirement.DoesNotExist:
+            return
+            
+        # 2. 确定权重
+        weights = {
+            'view': 1.0,
+            'favorite': 3.0,
+            'apply': 5.0
+        }
+        score_add = weights.get(action_type, 1.0)
+        score_add_tag2 = score_add
+        if action_type == 'view':
+            score_add_tag2 = 0.5
+        
+        # 3. 更新 Redis
+        redis_key = f"user:dynamic_tags:{user_id}"
+        
+        # 获取 redis client
+        redis_client = None
+        if hasattr(cache, 'client') and hasattr(cache.client, 'get_client'):
+            redis_client = cache.client.get_client()
+        elif hasattr(cache, '_cache') and hasattr(cache._cache, 'get_client'):
+            redis_client = cache._cache.get_client()
+            
+        if not redis_client:
+            logger.warning("Redis client not available for dynamic tags update")
+            return
+            
+        pipeline = redis_client.pipeline()
+        
+        # 处理 Tag1 (兴趣/领域)
+        for tag in req.tag1.all():
+            field = f"tag1_{tag.id}"
+            pipeline.hincrbyfloat(redis_key, field, score_add)
+            
+        # 处理 Tag2 (技能)
+        for tag in req.tag2.all():
+            field = f"tag2_{tag.id}"
+            pipeline.hincrbyfloat(redis_key, field, score_add_tag2)
+            
+        # 4. 衰减机制：每次更新时有 10% 概率触发全量衰减 (x 0.95)
+        # 这样避免每次请求都读取全量并重写，又能保证长期不膨胀
+        if random.random() < 0.1:
+            all_tags = redis_client.hgetall(redis_key)
+            if all_tags:
+                decay_pipeline = redis_client.pipeline()
+                for field, score in all_tags.items():
+                    try:
+                        new_score = float(score) * 0.95
+                        # 如果分数过小 (<0.1)，直接删除，清理空间
+                        if new_score < 0.1:
+                            decay_pipeline.hdel(redis_key, field)
+                        else:
+                            decay_pipeline.hset(redis_key, field, new_score)
+                    except ValueError:
+                        pass
+                decay_pipeline.execute()
+            
+        # 执行增量 pipeline
+        pipeline.execute()
+        
+        # 保持有效期
+        redis_client.expire(redis_key, 7 * 24 * 3600)
+        
+        logger.info(f"Updated dynamic tags for user {user_id} on req {requirement_id} ({action_type})")
+        
+    except Exception as e:
+        logger.error(f"Error updating dynamic tags: {e}")
+
+@shared_task
+def generate_daily_candidates_task(user_id=None):
+    """
+    生成每日推荐候选集 (Base Pool)
+    如果指定 user_id，则只为该用户生成
+    如果不指定，则为所有活跃学生用户生成 (批量)
+    活跃定义: 账号启用且最近7天内登录过
+    """
+    from user.models import Student
+    from project.services import RecommendationService
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    try:
+        if user_id:
+            logger.info(f"Starting daily candidate generation for user {user_id}")
+            RecommendationService.generate_candidates(user_id)
+        else:
+            # 批量处理所有活跃学生
+            # 定义活跃：最近7天登录过
+            seven_days_ago = timezone.now() - timedelta(days=7)
+            
+            # 筛选条件: 用户激活 AND (最近7天登录 OR 刚刚注册)
+            # 注意：刚注册的用户 last_login 可能为空，但 date_joined 是新的
+            students = Student.objects.select_related('user').filter(
+                user__is_active=True
+            ).filter(
+                Q(user__last_login__gte=seven_days_ago) | 
+                Q(user__date_joined__gte=seven_days_ago)
+            )
+            
+            logger.info(f"Starting daily candidate generation for {students.count()} active students")
+            
+            for student in students:
+                # 为避免阻塞 worker 太久，可以再次 dispatch 子任务，或者在这里顺序执行
+                # 鉴于用户量可能较大，建议 dispatch 子任务
+                generate_daily_candidates_task.delay(student.user.id)
+                
+    except Exception as e:
+        logger.error(f"Error in generate_daily_candidates_task: {e}")
+
+@shared_task
+def refresh_realtime_candidates_task(user_id):
+    """
+    刷新实时推荐候选集 (Incremental Update)
+    触发时机：用户行为积累或定时
+    """
+    from project.services import RecommendationService
+    
+    try:
+        if not user_id:
+            return
+            
+        logger.info(f"Refreshing realtime candidates for user {user_id}")
+        # 复用核心逻辑，重新生成候选集并覆盖缓存
+        # 由于 generate_candidates 已经包含了动态画像和双路召回，
+        # 重新运行它就是"刷新"
+        RecommendationService.generate_candidates(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error in refresh_realtime_candidates_task: {e}")
