@@ -42,7 +42,7 @@ CACHES = {
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",
-        "NAME": "bupt_zh_stresstest1",  # 测试数据库
+        "NAME": "bupt_zh_showDB",  # 测试数据库
         "USER": os.getenv("DB_USER", "root"),
         "PASSWORD": os.getenv("DB_PASSWORD", ""),
         "HOST": os.getenv("DB_HOST", "localhost"),

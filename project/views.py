@@ -21,6 +21,8 @@ from django.utils import timezone
 from .ai_utils import generate_poster_images, save_temp_images
 from django.core.cache import cache
 
+from user.services import UserHistoryService
+
 logger = logging.getLogger(__name__)
 
 
@@ -473,6 +475,9 @@ def get_requirement(request, requirement_id):
         user_viewed_key = f"requirement_viewed_{requirement_id}_{request.user.id}"
         has_viewed = cache.get(user_viewed_key)
         
+        # 记录浏览历史 (Redis ZSet) - 无论是否增加浏览量，只要访问了就记录（更新时间戳）
+        UserHistoryService.record_view(request.user.id, requirement_id, 'requirement')
+        
         if not has_viewed:
             # 如果未访问过，增加浏览量并设置访问标记
             try:
@@ -760,6 +765,14 @@ def list_requirements(request):
                 return APIResponse.success(cached_data, "获取需求列表成功(Cache)")
 
             try:
+                # 获取用户浏览历史（用于去重）
+                # 注意：这里我们获取全量历史ID，UserHistoryService 已经限制了 ZSet 最大长度为 1000
+                viewed_ids = UserHistoryService.get_all_viewed_ids(request.user.id, 'requirement')
+                
+                # 软去重策略：
+                # 不直接排除已读内容，而是将其排序权重降低（沉底）
+                # 这样当没有新内容时，用户仍然可以看到已读的热门/相关内容，而不是空列表
+                
                 student = request.user.student_profile
                 # 获取ID列表
                 skill_ids = list(student.skills.values_list('id', flat=True))
@@ -782,6 +795,11 @@ def list_requirements(request):
                     #    这样可以让新发布的（即使0浏览）也能排在前面，解决新需求冷启动
                     
                     queryset = queryset.annotate(
+                        is_viewed=Case(
+                            When(id__in=viewed_ids or [], then=1),
+                            default=0,
+                            output_field=IntegerField()
+                        ),
                         freshness_score=Case(
                             When(created_at__gte=three_days_ago, then=50),
                             When(created_at__gte=seven_days_ago, then=20),
@@ -791,7 +809,7 @@ def list_requirements(request):
                         hot_score=Log(F('views') + 1, 10) * 5
                     ).annotate(
                         total_score=F('freshness_score') + F('hot_score')
-                    ).order_by('-total_score', '-created_at')
+                    ).order_by('is_viewed', '-total_score', '-created_at')
                     
                     # 标记为冷启动，后续生成推荐理由时使用
                     is_cold_start = True
@@ -809,6 +827,11 @@ def list_requirements(request):
                     # 4. 热度加分 log10(views + 1) * 2
                     
                     queryset = queryset.annotate(
+                        is_viewed=Case(
+                            When(id__in=viewed_ids or [], then=1),
+                            default=0,
+                            output_field=IntegerField()
+                        ),
                         skill_score=Count('tag2', filter=Q(tag2__id__in=skill_ids)) * 10,
                         interest_score=Count('tag1', filter=Q(tag1__id__in=interest_ids)) * 5,
                         freshness_score=Case(
@@ -824,8 +847,11 @@ def list_requirements(request):
                         total_score=F('skill_score') + F('interest_score') + F('freshness_score') + F('hot_score')
                     )
                     
-                    # 应用排序：优先按总分降序，同分按时间降序
-                    queryset = queryset.order_by('-total_score', '-created_at')
+                    # 应用排序：
+                    # 1. is_viewed: 未读(0)优先，已读(1)沉底
+                    # 2. total_score: 总分降序
+                    # 3. created_at: 时间降序
+                    queryset = queryset.order_by('is_viewed', '-total_score', '-created_at')
                 
             except Exception as e:
                 logger.warning(f"推荐排序计算失败，降级为时间排序: {str(e)}")
@@ -910,11 +936,11 @@ def list_requirements(request):
                         pass
                 else:
                     # 检查评分注解是否存在
-                    if getattr(req, 'skill_score', 0) > 0:
+                    if (getattr(req, 'skill_score', 0) or 0) > 0:
                         reasons.append("技能匹配")
-                    if getattr(req, 'interest_score', 0) > 0:
+                    if (getattr(req, 'interest_score', 0) or 0) > 0:
                         reasons.append("兴趣匹配")
-                    if getattr(req, 'freshness_score', 0) > 0:
+                    if (getattr(req, 'freshness_score', 0) or 0) > 0:
                         reasons.append("近期发布")
                     
                     # 热门需求：浏览量产生的热度分
@@ -922,7 +948,7 @@ def list_requirements(request):
                     # 例如 100浏览量 -> log10(101)≈2 -> score=4
                     # 设置一个显示阈值，避免所有有浏览量的都显示"热门"
                     # 这里暂定 hot_score > 2 (即浏览量 > 9) 时显示
-                    if getattr(req, 'hot_score', 0) > 2:
+                    if (getattr(req, 'hot_score', 0) or 0) > 2:
                         reasons.append("热门需求")
                 
                 req.recommendation_reason = reasons

@@ -42,6 +42,7 @@ from .serializers import (
     ProjectDeliverableDetailSerializer
 )
 from user.models import Student, OrganizationUser, Tag2
+from user.services import UserHistoryService
 from project.models import File, Requirement, Resource
 from common_utils import APIResponse, format_validation_errors
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
@@ -734,6 +735,9 @@ def get_project_detail(request, project_id):
     """
     try:
         project = get_object_or_404(StudentProject, id=project_id)
+        
+        # 记录浏览历史
+        UserHistoryService.record_view(request.user.id, project_id, 'project')
         
         # 序列化项目详情
         serializer = StudentProjectDetailSerializer(project, context={'request': request})

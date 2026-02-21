@@ -1,6 +1,7 @@
 from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
+from django.db.models import F
 from .models import Requirement
 from .services import get_or_create_collection, delete_requirement_vectors, sync_requirement_vectors, sync_raw_docs_auto
 import logging

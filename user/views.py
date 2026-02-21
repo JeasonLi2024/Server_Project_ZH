@@ -8,7 +8,9 @@ import logging
 
 from .models import User, Tag1, Tag2
 from .serializers import UserProfileSerializer, UserUpdateSerializer, AvatarUploadSerializer, Tag1Serializer, Tag2Serializer
-from common_utils import APIResponse, format_validation_errors, build_media_url
+from .services import UserHistoryService
+from common_utils import APIResponse, format_validation_errors, build_media_url, paginate_queryset
+from project.serializers import RequirementSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,121 @@ def update_profile(request):
         return APIResponse.server_error('更新用户资料失败，请稍后重试')
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_view_history(request):
+    """
+    获取用户的浏览历史
+    
+    Query Params:
+    - page: 页码 (默认1)
+    - page_size: 每页数量 (默认20)
+    - type: 浏览类型 (requirement/project, 默认 requirement)
+    """
+    try:
+        user_id = request.user.id
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 20))
+        item_type = request.GET.get('type', 'requirement')
+        
+        # 1. 从 Redis 获取历史 ID 列表
+        page = max(1, page)
+        item_ids, total_count = UserHistoryService.get_history(user_id, item_type, page, page_size)
+        
+        if not item_ids:
+            return APIResponse.success({
+                'results': [],
+                'pagination': {
+                    'current_page': page,
+                    'total_pages': 0,
+                    'total_count': 0,
+                    'page_size': page_size,
+                    'previous_url': None,
+                    'next_url': None
+                }
+            })
+            
+        # 2. 根据 ID 回查详情
+        if item_type == 'requirement':
+            from project.models import Requirement
+            # 保持顺序：Redis 返回的是按时间倒序的，MySQL filter(id__in) 不保证顺序
+            # 必须手动重排
+            objects = Requirement.objects.filter(id__in=item_ids).select_related(
+                'organization', 'publish_people__user'
+            ).prefetch_related(
+                'tag1', 'tag2'
+            )
+            
+            # 构建 ID -> Object 映射
+            obj_map = {obj.id: obj for obj in objects}
+            
+            # 按 Redis 顺序重组
+            sorted_objects = []
+            for iid in item_ids:
+                if iid in obj_map:
+                    sorted_objects.append(obj_map[iid])
+            
+            # 序列化
+            serializer = RequirementSerializer(sorted_objects, many=True, context={'request': request})
+            data = serializer.data
+            
+        else:
+            # 获取项目类型的浏览历史
+            from studentproject.models import StudentProject
+            from studentproject.serializers import StudentProjectListSerializer
+            
+            # 保持顺序：Redis 返回的是按时间倒序的，MySQL filter(id__in) 不保证顺序
+            objects = StudentProject.objects.filter(id__in=item_ids).select_related(
+                'requirement', 'requirement__organization'
+            )
+            
+            # 构建 ID -> Object 映射
+            obj_map = {obj.id: obj for obj in objects}
+            
+            # 按 Redis 顺序重组
+            sorted_objects = []
+            for iid in item_ids:
+                if iid in obj_map:
+                    sorted_objects.append(obj_map[iid])
+            
+            # 序列化
+            serializer = StudentProjectListSerializer(sorted_objects, many=True, context={'request': request})
+            data = serializer.data
+            
+        # 构建分页信息
+        total_pages = (total_count + page_size - 1) // page_size
+        
+        previous_url = None
+        next_url = None
+        
+        base_url = request.build_absolute_uri().split('?')[0]
+        query_params = request.GET.copy()
+        
+        if page > 1:
+            query_params['page'] = page - 1
+            previous_url = f"{base_url}?{query_params.urlencode()}"
+            
+        if page < total_pages:
+            query_params['page'] = page + 1
+            next_url = f"{base_url}?{query_params.urlencode()}"
+
+        return APIResponse.success({
+            'results': data,
+            'pagination': {
+                'current_page': page,
+                'total_pages': total_pages,
+                'total_count': total_count,
+                'page_size': page_size,
+                'previous_url': previous_url,
+                'next_url': next_url
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取浏览历史失败: {str(e)}")
+        return APIResponse.server_error('获取浏览历史失败，请稍后重试')
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def upload_avatar(request):
@@ -100,6 +217,7 @@ def upload_avatar(request):
         return APIResponse.error('头像上传失败，请稍后重试', code=500)
 
 
+# 标签管理相关视图
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_interest_tags(request):
