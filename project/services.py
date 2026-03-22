@@ -186,7 +186,6 @@ class RecommendationService:
         """计算用户查询向量 (静态 + 动态融合)"""
         from django.core.cache import cache
         from user.services import UserHistoryService
-        from project.milvus_utils import get_vectors_by_ids, generate_embedding
         import numpy as np
         
         user_vector_cache_key = f"user_query_vector_{user_id}"
@@ -252,7 +251,6 @@ class RecommendationService:
         from datetime import timedelta
         from project.models import Requirement
         from user.services import UserHistoryService
-        from project.milvus_utils import search_similar_requirements
         
         try:
             # 准备数据

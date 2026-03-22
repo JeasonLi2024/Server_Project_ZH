@@ -23,13 +23,7 @@ from .ai_utils import generate_poster_images, save_temp_images
 from django.core.cache import cache
 
 from user.services import UserHistoryService
-from project.services import (
-    search_similar_requirements, 
-    get_vectors_by_ids, 
-    generate_embedding,
-    EmbeddingService
-)
-import numpy as np
+from project.services import RecommendationService
 
 logger = logging.getLogger(__name__)
 
@@ -762,8 +756,6 @@ def list_requirements(request):
             
             if not candidate_ids:
                 try:
-                    # 调用 Service 生成候选集
-                    from project.services import RecommendationService
                     candidate_ids = RecommendationService.generate_candidates(request.user.id)
                     
                     # 写入缓存 (10分钟)
