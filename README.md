@@ -9,7 +9,8 @@
 - 实时通信：Django Channels（ASGI，`daphne` 启动）。
 - 任务队列：Celery + django-celery-beat（Redis 作为 broker 和 result）。
 - 数据与缓存：MySQL、Redis、Milvus（向量检索）。
-- 其他：Whitenoise（静态）、PyMuPDF/pandas/openpyxl（文档与表格）、pytest（测试）。
+- 其他：Whitenoise（静态）、PyMuPDF/pandas/openpyxl（文档与表格）、pytest（测试）、supervisor（进程管理部署）。
+- 智能体：LangChain/LangGraph（用于需求发布、分析与推荐）。详见 /mnt/data/langchain-v2.0/ 说明。
 
 ## 目录结构
 ```
@@ -107,6 +108,17 @@ apps（部分）：
 - Redis/Milvus 不可用：检查地址与端口，确认服务状态与凭据。
 
 ## 运维说明（Supervisor）
+目前项目使用 Supervisor 管理进程，包括 Django 应用、Celery 任务和智能体服务。
+```bash
+bupt@RCXM-2025-025-zhihui:~$ sudo supervisorctl -c /etc/supervisor/supervisord.conf status
+celery_beat                      RUNNING   pid 651660, uptime 0:05:15
+celery_worker                    RUNNING   pid 652210, uptime 0:05:05
+django_project_zhihui            RUNNING   pid 652673, uptime 0:04:54
+django_project_zhihui_test       RUNNING   pid 925, uptime 1 day, 17:21:47
+langchain-cleanup                RUNNING   pid 653639, uptime 0:04:33
+langchain-server                 RUNNING   pid 653147, uptime 0:04:44
+```
+
 Supervisor常用命令：
 ### 重启应用
 `supervisorctl -c /etc/supervisor/supervisord.conf restart django_project_zhihui django_project_zhihui_test `
@@ -176,9 +188,172 @@ Supervisor常用命令：
    supervisorctl -c /home/bupt/Server_Project_ZH/supervisord.conf restart django_project_zhihui
    ```
 
-## 安装Milvus
+## Milvus（配合LangChain/LangGraph开发的智能体使用）
 
-## 安装配置 Ollama Embeddings - bge-m3:567模型
+### 一、安装方式
+
+本项目推荐使用 **Docker Compose 单机版 Milvus**，部署目录固定为：
+
+```bash
+/mnt/data/milvus
+```
+
+1. 准备目录与配置文件：
+
+```bash
+sudo mkdir -p /mnt/data/milvus
+cd /mnt/data/milvus
+```
+
+将项目约定的 `docker-compose.yml` 放入该目录（包含 `etcd`、`minio`、`milvus-standalone` 三个服务）。
+
+2. 首次安装（拉取镜像并启动）：
+
+```bash
+cd /mnt/data/milvus
+sudo docker compose up -d
+```
+
+3. 安装后检查：
+
+```bash
+sudo docker compose ps -a
+ss -ltn | grep -E ':19530|:9091|:9000|:9001'
+```
+
+4. 项目侧环境变量（`.env`）：
+
+```bash
+MILVUS_HOST=127.0.0.1
+MILVUS_PORT=19530
+MILVUS_COLLECTION=enterprise_vectors
+```
+
+5. 重要约定：
+- 统一使用 `/mnt/data/milvus/docker-compose.yml` 管理 Milvus。
+- 若系统存在 `/mnt/data/docker-compose.yml`，不要与上述路径混用，避免误操作到不同编排文件。
+
+### 二、在本项目中的用途
+
+Milvus 在本项目中主要承担两类向量能力：
+
+1. **需求语义检索与推荐**
+   - `project_embeddings`：存储需求文本向量，用于相似需求召回与推荐排序。
+   - `project_raw_docs`：存储需求附件/文本切片向量，用于更细粒度语义匹配。
+2. **读搜模块检索**
+   - `enterprise_vectors`（读搜模块历史/兼容链路中使用）：用于 PDF 切片后的向量检索。
+
+### 三、配置与默认值
+
+项目通过 `.env` 与 Django settings 读取 Milvus 配置：
+
+```bash
+MILVUS_HOST=127.0.0.1
+MILVUS_PORT=19530
+MILVUS_COLLECTION=enterprise_vectors
+```
+
+说明：
+- 推荐将 `MILVUS_HOST/MILVUS_PORT` 与实际 Docker 暴露端口保持一致。
+- 当前运维建议统一使用 `/mnt/data/milvus/docker-compose.yml` 作为 Milvus 部署入口，避免多个 compose 文件混用。
+
+### 四、基本操作指令（Docker Compose）
+
+以下命令基于当前服务器实际路径 `/mnt/data/milvus`：
+
+```bash
+cd /mnt/data/milvus
+```
+
+1. 启动服务：
+
+```bash
+sudo docker compose up -d
+```
+
+2. 查看状态：
+
+```bash
+sudo docker compose ps -a
+```
+
+3. 查看日志（重点看 standalone 与 minio）：
+
+```bash
+sudo docker compose logs --tail=200 standalone
+sudo docker compose logs --tail=200 minio
+```
+
+4. 重启服务：
+
+```bash
+sudo docker compose restart standalone
+sudo docker compose restart minio
+sudo docker compose restart etcd
+```
+
+5. 停止服务：
+
+```bash
+sudo docker compose down
+```
+
+6. 端口检查（Milvus gRPC/health）：
+
+```bash
+ss -ltn | grep -E ':19530|:9091|:9000|:9001'
+```
+
+### 五、项目侧快速连通性验证
+
+1. Python 直连测试（在项目根目录执行）：
+
+```bash
+/home/bupt/Server_Project_ZH/venv/bin/python - <<'PY'
+from pymilvus import connections, utility
+connections.connect(alias='default', host='127.0.0.1', port='19530')
+print("server_version:", utility.get_server_version())
+print("collections:", utility.list_collections())
+connections.disconnect('default')
+PY
+```
+
+2. 预期结果：
+   - 能输出 `server_version`（如 `2.6.x`）
+   - 能列出集合（如 `project_embeddings`、`project_raw_docs`、`enterprise_vectors` 等）
+
+### 六、常见问题排查
+
+1. **应用日志报错：`Failed to connect to Milvus` / `ConnectionNotExistException`**
+   - 现象：Django 日志中出现无法连接 `127.0.0.1:19530`。
+   - 排查：
+     - `docker compose ps -a` 确认 `milvus-standalone` 为 `Up`
+     - `ss -ltn | grep 19530` 确认端口监听
+     - 检查 `.env` 中 `MILVUS_HOST/MILVUS_PORT` 与实际一致
+
+2. **MinIO 启动失败：`decodeXLHeaders: Unknown xl header version 2`**
+   - 原因：MinIO 版本与现有数据目录格式不兼容（常见于历史镜像切换）。
+   - 处理：
+     - 升级 MinIO 镜像版本（建议使用较新稳定版本）
+     - 必要时备份后清理 MinIO 数据目录再重建
+
+3. **Milvus `standalone` 退出且出现 `panic ... rocksmq`**
+   - 原因：历史 Rocksmq 元数据不兼容/损坏。
+   - 处理：
+     - 在 `standalone.environment` 中使用 `MQ_TYPE: woodpecker`
+     - 停服后清理 `volumes/milvus/rdb_data` 与 `volumes/milvus/rdb_data_meta_kv`，再重启
+
+4. **容器都在但仍检索失败**
+   - 排查顺序：
+     - `sudo docker compose logs --tail=200 standalone`
+     - 使用 Python 直连脚本验证 `utility.list_collections()`
+     - 检查集合名与业务代码一致（`project_embeddings`/`project_raw_docs`/`enterprise_vectors`）
+
+5. **`version is obsolete` 告警**
+   - 含义：`docker-compose.yml` 中 `version:` 字段在新 Compose 中已废弃。
+   - 影响：通常不影响运行，可在后续维护时移除该字段以减少噪音告警。
+
+## （不再需要）安装配置 Ollama Embeddings - bge-m3:567模型
 1. 安装Ollama：根据[Ollama官方文档](https://ollama.ai/docs/installation)安装Ollama，Linux环境下可直接使用：
    
    ```
