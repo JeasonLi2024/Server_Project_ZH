@@ -26,8 +26,6 @@ from .serializers import (
     StudentProjectDetailSerializer,
     StudentProjectListSerializer,
     ProjectApplicationSerializer,
-    ApplicationReviewSerializer,
-    BatchApplicationReviewSerializer,
     UnifiedApplicationReviewSerializer,
     ParticipantListSerializer,
     ParticipantDetailSerializer,
@@ -910,7 +908,6 @@ def handle_applications(request, project_id):
             for participant in participants:
                 if action == 'approve':
                     participant.status = 'approved'
-                    participant.approved_at = timezone.now()
                 else:
                     participant.status = 'rejected'
                 
@@ -1004,7 +1001,7 @@ def get_project_participants(request, project_id):
         participants_data = ParticipantListSerializer(
             pagination_result['page_data'], 
             many=True, 
-            context={'request': request}
+            context={'request': request, 'detail_mode': True}
         ).data
         
         # 获取待审核的申请（仅负责人可见）
@@ -1014,7 +1011,11 @@ def get_project_participants(request, project_id):
                 project=project,
                 status='pending'
             ).select_related('student__user').order_by('applied_at')
-            pending_data = ParticipantListSerializer(pending_applications, many=True, context={'request': request}).data
+            pending_data = ParticipantListSerializer(
+                pending_applications,
+                many=True,
+                context={'request': request, 'detail_mode': True}
+            ).data
         else:
             pending_data = []
         
@@ -1062,7 +1063,10 @@ def get_participant_detail(request, project_id, participant_id):
             )
         
         # 序列化数据
-        serializer = ParticipantDetailSerializer(participant, context={'request': request})
+        serializer = ParticipantDetailSerializer(
+            participant,
+            context={'request': request, 'detail_mode': True}
+        )
         
         return APIResponse.success(
             data=serializer.data

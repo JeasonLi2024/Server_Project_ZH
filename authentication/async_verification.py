@@ -95,6 +95,7 @@ def send_verification_email_task(self, email, code, code_type):
             'login': '【校企对接平台】登录验证码',
             'reset_password': '【校企对接平台】重置密码验证码',
             'change_email': '【校企对接平台】更换邮箱验证码',
+            'student_edu_verify': '【校企对接平台】学生教育邮箱认证验证码',
         }
         
         # 使用HTML模板（可选）

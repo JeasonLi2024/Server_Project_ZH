@@ -49,11 +49,11 @@ class ProjectParticipantInline(admin.TabularInline):
 class StudentProjectAdmin(admin.ModelAdmin):
     """学生项目管理"""
     list_display = [
-        'id', 'title', 'requirement', 'status', 'get_leader_name', 
+        'id', 'title', 'contact_info', 'requirement', 'status', 'get_leader_name',
         'get_participant_count', 'created_at'
     ]
     list_filter = ['status', 'created_at', 'updated_at']
-    search_fields = ['title', 'description', 'requirement__title']
+    search_fields = ['title', 'description', 'contact_info', 'requirement__title']
     readonly_fields = ['created_at', 'updated_at']
     raw_id_fields = ['requirement']
     inlines = [ProjectParticipantInline]
@@ -61,7 +61,7 @@ class StudentProjectAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('基本信息', {
-            'fields': ('title', 'description', 'requirement', 'status')
+            'fields': ('title', 'description', 'contact_info', 'requirement', 'status')
         }),
         ('时间信息', {
             'fields': ('created_at', 'updated_at'),

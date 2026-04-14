@@ -24,6 +24,11 @@ class StudentProject(models.Model):
     description = models.TextField(
         verbose_name='项目描述'
     )
+
+    contact_info = models.CharField(
+        max_length=255,
+        verbose_name='联系方式'
+    )
     
     # 关联需求
     requirement = models.ForeignKey(

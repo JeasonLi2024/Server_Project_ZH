@@ -9,7 +9,7 @@ from notification.services import notification_service
 class RequirementAdmin(admin.ModelAdmin):
     list_display = ['id', 'title', 'status_display', 'organization', 'publish_people', 'evaluation_criteria_display', 'views', 'created_at']
     list_filter = ['status', 'created_at', 'organization', 'publish_people', 'evaluation_criteria']
-    search_fields = ['title', 'brief', 'description', 'organization__name', 'publish_people__user__username', 'publish_people__user__real_name', 'evaluation_criteria__name']
+    search_fields = ['title', 'brief', 'description', 'goal', 'expected_result', 'organization__name', 'publish_people__user__username', 'publish_people__user__real_name', 'evaluation_criteria__name']
     readonly_fields = ['id', 'created_at', 'updated_at',  'get_student_projects_count', 'get_total_participants_count', 'get_evaluation_criteria_info']
     filter_horizontal = ['tag1', 'tag2', 'resources', 'files']
     ordering = ['-created_at']
@@ -114,7 +114,7 @@ class RequirementAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('基本信息', {
-            'fields': ('title', 'brief', 'description', 'status')
+            'fields': ('title', 'brief', 'description', 'goal', 'expected_result', 'status')
         }),
         ('组织信息', {
             'fields': ('organization', 'publish_people')
@@ -124,7 +124,10 @@ class RequirementAdmin(admin.ModelAdmin):
             'description': '需求审核相关信息。审核意见：审核通过填写"通过"即可，审核不通过需注明具体原因'
         }),
         ('项目信息', {
-            'fields': ('budget', 'finish_time', 'support_provided', 'get_student_projects_count', 'get_total_participants_count')
+            'fields': (
+                'budget', 'finish_time', 'contact_person', 'contact_info',
+                'support_provided', 'get_student_projects_count', 'get_total_participants_count'
+            )
         }),
         ('统计信息', {
             'fields': ('views',)

@@ -91,7 +91,8 @@ class BaseFieldsMixin:
         """获取需求相关字段列表"""
         return [
             'title', 'brief', 'description', 'status', 'organization',
-            'finish_time', 'budget', 'people_count', 'support_provided', 'evaluation_criteria_id',
+            'goal', 'expected_result', 'finish_time', 'budget', 'people_count', 'contact_person', 'contact_info',
+            'support_provided', 'evaluation_criteria_id',
             'cover_file', 'cover_url'
         ] + cls.get_common_fields()
 
@@ -111,7 +112,8 @@ class BaseFieldsMixin:
         extra_kwargs = {}
         optional_fields = [
             'title', 'brief', 'description', 'status', 'organization',
-            'finish_time', 'budget', 'people_count', 'support_provided'
+            'goal', 'expected_result', 'finish_time', 'budget', 'people_count',
+            'contact_person', 'contact_info', 'support_provided'
         ]
 
         for field in optional_fields:

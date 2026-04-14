@@ -446,7 +446,14 @@ def sync_requirement_vectors(requirement):
         tags1 = [t.value for t in requirement.tag1.all()]
         tags2 = [t.post for t in requirement.tag2.all()]
         
-        full_text = f"Title: {requirement.title}\nBrief: {requirement.brief}\nDescription: {requirement.description}\nTags: {', '.join(tags1 + tags2)}"
+        full_text = (
+            f"Title: {requirement.title}\n"
+            f"Brief: {requirement.brief}\n"
+            f"Goal: {requirement.goal}\n"
+            f"Expected Result: {requirement.expected_result}\n"
+            f"Description: {requirement.description}\n"
+            f"Tags: {', '.join(tags1 + tags2)}"
+        )
         
         # 2. 生成向量
         vector = generate_embedding(full_text)
@@ -573,7 +580,13 @@ def sync_raw_docs_auto(requirement):
             logger.info(f"Requirement {requirement.id} has no file content. Using description fallback.")
             tags1 = [t.value for t in requirement.tag1.all()]
             tags2 = [t.post for t in requirement.tag2.all()]
-            full_text_content = f"Title: {requirement.title}\nBrief: {requirement.brief}\nDescription: {requirement.description}"
+            full_text_content = (
+                f"Title: {requirement.title}\n"
+                f"Brief: {requirement.brief}\n"
+                f"Goal: {requirement.goal}\n"
+                f"Expected Result: {requirement.expected_result}\n"
+                f"Description: {requirement.description}"
+            )
             if tags1 or tags2:
                 full_text_content += f"\nTags: {', '.join(tags1 + tags2)}"
         

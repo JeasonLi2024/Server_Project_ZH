@@ -153,12 +153,16 @@ def create_requirement(request):
     - title: 需求标题 (必填)
     - brief: 需求简介 (必填)
     - description: 详细描述 (必填)
+    - goal: 需求目标 (必填)
+    - expected_result: 期望成果 (必填)
     - status: 需求状态 (可选，默认为'under_review')
     - organization: 组织ID (必填)
     
     - finish_time: 完成时间 (可选)
     - budget: 预算 (可选)
     - people_count: 人数需求 (可选)
+    - contact_person: 联系人 (必填)
+    - contact_info: 联系方式 (必填)
     - tag1_ids: 兴趣标签ID列表 (可选)
     - tag2_ids: 能力标签ID列表 (可选)
     - resource_ids: 关联资源ID列表 (可选)
@@ -228,12 +232,16 @@ def update_requirement(request, requirement_id):
     - title: 需求标题 (可选)
     - brief: 需求简介 (可选)
     - description: 详细描述 (可选)
+    - goal: 需求目标 (必填，PATCH未传时沿用原值)
+    - expected_result: 期望成果 (必填，PATCH未传时沿用原值)
     - status: 需求状态 (可选)
     - organization: 组织ID (可选)
     
     - finish_time: 完成时间 (可选)
     - budget: 预算 (可选)
     - people_count: 人数需求 (可选)
+    - contact_person: 联系人 (必填，PATCH未传时沿用原值)
+    - contact_info: 联系方式 (必填，PATCH未传时沿用原值)
     - tag1_ids: 兴趣标签ID列表 (可选)
     - tag2_ids: 能力标签ID列表 (可选)
     - resource_ids: 关联资源ID列表 (可选)
@@ -561,10 +569,11 @@ def list_requirements(request):
     - time: 需求发布时间筛选（支持单日和范围筛选，格式：YYYY-MM-DD 或 start_date-end_date）
     - status: 需求状态筛选
     - organization_id: 组织ID筛选
+    - organization_type: 组织类型筛选（university、enterprise、other）
     - publisher_id: 发布者用户ID筛选（用于获取特定用户发布的需求）
     - sort_type: 排序字段（title/time/view）
     - sort_order: 排序方式（up升序/down降序）
-    - keyword: 搜索关键词（可从需求标题、描述、tag1和tag2中模糊检索）
+    - keyword: 搜索关键词（可从需求标题、描述、目标、期望成果、联系人、联系方式、tag1和tag2中模糊检索）
     """
     try:
         # 构建基础查询集，使用数据库索引优化
@@ -594,6 +603,21 @@ def list_requirements(request):
                 queryset = queryset.filter(organization_id=int(organization_id))
             except (ValueError, TypeError):
                 pass
+
+        # 组织类型筛选
+        organization_type = request.GET.get('organization_type')
+        if organization_type:
+            valid_org_types = ['university', 'enterprise', 'other']
+            if organization_type not in valid_org_types:
+                return APIResponse.validation_error(
+                    errors={
+                        'organization_type': [
+                            f"无效的组织类型: {organization_type}，可选值为 {', '.join(valid_org_types)}"
+                        ]
+                    },
+                    message="参数校验失败"
+                )
+            queryset = queryset.filter(organization__organization_type=organization_type)
         
         # 发布者筛选（新增）
         publisher_id = request.GET.get('publisher_id')
@@ -715,10 +739,17 @@ def list_requirements(request):
             except Exception:
                 pass
         
-        # 关键词搜索（支持标题、描述、tag1、tag2）
+        # 关键词搜索（支持标题、描述、目标、期望成果、联系人、联系方式、tag1、tag2）
         keyword = request.GET.get('keyword')
         if keyword:
-            search_q = Q(title__icontains=keyword) | Q(description__icontains=keyword)
+            search_q = (
+                Q(title__icontains=keyword)
+                | Q(description__icontains=keyword)
+                | Q(goal__icontains=keyword)
+                | Q(expected_result__icontains=keyword)
+                | Q(contact_person__icontains=keyword)
+                | Q(contact_info__icontains=keyword)
+            )
             # 搜索tag1和tag2
             search_q |= Q(tag1__value__icontains=keyword) | Q(tag2__category__icontains=keyword) | Q(tag2__subcategory__icontains=keyword) | Q(tag2__specialty__icontains=keyword)
             queryset = queryset.filter(search_q).distinct()
@@ -1861,6 +1892,13 @@ def list_favorite_requirements(request):
     
     只有学生用户可以查看自己的收藏列表。
     支持分页和基本筛选。
+    
+    查询参数:
+    - status: 需求状态筛选（可选）
+    - organization_id: 组织ID筛选（可选）
+    - organization_type: 组织类型筛选（university、enterprise、other，可选）
+    - search: 关键词搜索（可选）
+    - ordering: 排序字段（可选）
     """
     try:
         user = request.user
@@ -1885,6 +1923,21 @@ def list_favorite_requirements(request):
         organization_id = request.GET.get('organization_id')
         if organization_id:
             queryset = queryset.filter(requirement__organization_id=organization_id)
+
+        # 组织类型筛选
+        organization_type = request.GET.get('organization_type')
+        if organization_type:
+            valid_org_types = ['university', 'enterprise', 'other']
+            if organization_type not in valid_org_types:
+                return APIResponse.validation_error(
+                    errors={
+                        'organization_type': [
+                            f"无效的组织类型: {organization_type}，可选值为 {', '.join(valid_org_types)}"
+                        ]
+                    },
+                    message="参数校验失败"
+                )
+            queryset = queryset.filter(requirement__organization__organization_type=organization_type)
         
         # 关键词搜索
         search = request.GET.get('search')
@@ -1892,7 +1945,11 @@ def list_favorite_requirements(request):
             queryset = queryset.filter(
                 Q(requirement__title__icontains=search) |
                 Q(requirement__brief__icontains=search) |
-                Q(requirement__description__icontains=search)
+                Q(requirement__description__icontains=search) |
+                Q(requirement__goal__icontains=search) |
+                Q(requirement__expected_result__icontains=search) |
+                Q(requirement__contact_person__icontains=search) |
+                Q(requirement__contact_info__icontains=search)
             )
         
         # 排序

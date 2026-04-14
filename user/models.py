@@ -136,6 +136,13 @@ class Student(models.Model):
         ('suspended', '休学'),
         ('dropped', '退学'),
     ]
+
+    VERIFICATION_CHOICES = [
+        ('unverified', '未认证'),
+        ('cas', 'CAS认证'),
+        ('edu_email_pending', '教育邮箱待审核'),
+        ('edu_email', '教育邮箱认证'),
+    ]
     
     # 关联用户
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student_profile')
@@ -149,6 +156,8 @@ class Student(models.Model):
     
     # 学业信息
     status = models.CharField('学籍状态', max_length=20, choices=STATUS_CHOICES, default='studying')
+    verification = models.CharField('学生认证方式', max_length=20, choices=VERIFICATION_CHOICES, default='unverified')
+    edu_email = models.EmailField('教育邮箱', unique=True, blank=True, null=True)
     expected_graduation = models.DateField('预计毕业时间', blank=True, null=True)
     
     # 时间戳

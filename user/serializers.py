@@ -101,7 +101,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Student
-        fields = ['id', 'student_id', 'school', 'major', 'grade', 'education_level', 'expected_graduation']
+        fields = ['id', 'student_id', 'school', 'major', 'grade', 'education_level', 'verification', 'edu_email', 'expected_graduation']
     
     def get_school(self, obj):
         """序列化学校信息"""
@@ -216,6 +216,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 'education_level_display': student.get_education_level_display(),
                 'status': student.status,
                 'status_display': student.get_status_display(),
+                'verification': student.verification,
+                'verification_display': student.get_verification_display(),
+                'edu_email': student.edu_email,
                 'expected_graduation': student.expected_graduation,
                 'interests': [{'id': tag.id, 'value': tag.value} for tag in student.interests.all()],
                 'skills': [{'id': tag.id, 'post': tag.post, 'category': tag.category, 'subcategory': tag.subcategory, 'specialty': tag.specialty, 'level': tag.level} for tag in student.skills.all()],

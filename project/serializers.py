@@ -289,8 +289,8 @@ class OrganizationSimpleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Organization
-        fields = ['id', 'name', 'logo', 'status']
-        read_only_fields = ['id', 'name', 'logo', 'status']
+        fields = ['id', 'name', 'logo', 'status', 'organization_type']
+        read_only_fields = ['id', 'name', 'logo', 'status', 'organization_type']
 
 
 class ResourceSimpleSerializer(serializers.ModelSerializer):
@@ -325,9 +325,9 @@ class RequirementSerializer(ProjectRelatedMixin, serializers.ModelSerializer):
     class Meta:
         model = Requirement
         fields = [
-            'id', 'title', 'brief', 'description', 'tag1', 'tag2', 'status',
+            'id', 'title', 'brief', 'description', 'goal', 'expected_result', 'tag1', 'tag2', 'status',
             'organization', 'publish_people', 'finish_time',
-            'budget', 'people_count', 'support_provided', 'evaluation_criteria', 'views',
+            'budget', 'people_count', 'contact_person', 'contact_info', 'support_provided', 'evaluation_criteria', 'views',
             'resources', 'files', 'cover', 'related_projects', 'total_project_members', 'total_project',
             'evaluation_published', 'is_favorited', 'recommendation_reason', 'created_at', 'updated_at'
         ]
@@ -457,13 +457,37 @@ class RequirementBaseSerializer(TagValidationMixin, FileHandlingMixin, serialize
     class Meta:
         model = Requirement
         fields = [
-            'title', 'brief', 'description', 'status', 'organization',
-            'finish_time', 'budget', 'people_count', 'support_provided', 'evaluation_criteria_id',
+            'title', 'brief', 'description', 'goal', 'expected_result', 'status', 'organization',
+            'finish_time', 'budget', 'people_count', 'contact_person', 'contact_info', 'support_provided', 'evaluation_criteria_id',
             'tag1_ids', 'tag2_ids', 'resource_ids', 'files_ids', 'files',
             'cloud_links', 'virtual_folder_path', 'maintain_structure',
             'cover_file', 'cover_url'
         ]
         abstract = True
+
+    def validate(self, attrs):
+        """统一校验必填文本字段且不可空白"""
+        required_text_fields = ['goal', 'expected_result', 'contact_person', 'contact_info']
+
+        # 校验显式传入值不能是空字符串
+        for field in required_text_fields:
+            if field in attrs and not str(attrs.get(field, '')).strip():
+                raise serializers.ValidationError({field: "该字段不能为空"})
+
+        # 创建时必须提交
+        if self.instance is None:
+            for field in required_text_fields:
+                if not str(attrs.get(field, '')).strip():
+                    raise serializers.ValidationError({field: "该字段为必填项"})
+            return attrs
+
+        # 更新时（含PATCH）保证最终值非空
+        for field in required_text_fields:
+            final_value = attrs.get(field, getattr(self.instance, field, ''))
+            if not str(final_value).strip():
+                raise serializers.ValidationError({field: "该字段不能为空"})
+
+        return attrs
     
     def _process_cover_url(self, cover_url):
         """处理封面URL（支持本地临时文件移动和远程文件下载）"""
@@ -749,7 +773,10 @@ class RequirementCreateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
         model = Requirement
         fields = BaseFieldsMixin.get_requirement_fields() + ['resource_ids']
         extra_kwargs = BaseFieldsMixin.get_requirement_extra_kwargs(
-            required_fields=['title', 'brief', 'description']
+            required_fields=[
+                'title', 'brief', 'description',
+                'goal', 'expected_result', 'contact_person', 'contact_info'
+            ]
         )
     
     def create(self, validated_data):
@@ -849,8 +876,8 @@ class RequirementUpdateSerializer(BaseFieldsMixin, AuditLogMixin, RequirementBas
     class Meta:
         model = Requirement
         fields = [
-            'title', 'brief', 'description', 'status', 'organization',
-            'finish_time', 'budget', 'people_count', 'support_provided', 'evaluation_criteria_id',
+            'title', 'brief', 'description', 'goal', 'expected_result', 'status', 'organization',
+            'finish_time', 'budget', 'people_count', 'contact_person', 'contact_info', 'support_provided', 'evaluation_criteria_id',
             'tag1_ids', 'tag2_ids', 'resource_ids', 'cover_file', 'cover_url'
         ]
         extra_kwargs = BaseFieldsMixin.get_requirement_extra_kwargs()

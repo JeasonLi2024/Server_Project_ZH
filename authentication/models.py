@@ -12,6 +12,7 @@ class EmailVerificationCode(models.Model):
         ('reset_password', '重置密码验证码'),
         ('change_email', '更换邮箱验证码'),
         ('delete_account', '账户注销验证码'),
+        ('student_edu_verify', '学生教育邮箱认证验证码'),
     ]
     
     email = models.EmailField('邮箱')

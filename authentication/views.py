@@ -32,13 +32,38 @@ from .serializers import (
     PasswordChangeSerializer, PasswordResetRequestSerializer,
     PasswordResetSerializer, ForgotPasswordSerializer, TokenVerifySerializer, RefreshTokenSerializer,
     LogoutSerializer, LoginLogSerializer, EmailCodeValidationSerializer, 
-    UserExistsCheckSerializer, ChangeEmailSerializer,
+    UserExistsCheckSerializer, ChangeEmailSerializer, StudentEduEmailSendCodeSerializer,
+    StudentEduEmailVerifySerializer,
     AccountDeletionRequestSerializer, AccountDeletionLogSerializer,
     AccountDeletionCancelSerializer, PhoneCodeSerializer
 )
 from common_utils import APIResponse, format_validation_errors
 
 logger = logging.getLogger(__name__)
+
+
+def is_edu_email(email: str) -> bool:
+    """判断是否为教育邮箱"""
+    if not email or '@' not in email:
+        return False
+    domain = email.split('@')[-1].lower()
+    domain_whitelist = getattr(
+        settings,
+        'STUDENT_EDU_EMAIL_DOMAIN_WHITELIST',
+        ['edu.cn', 'edu']
+    )
+    normalized_rules = [str(item).strip().lower().lstrip('.').lstrip('@') for item in domain_whitelist if str(item).strip()]
+    return any(domain == rule or domain.endswith(f'.{rule}') for rule in normalized_rules)
+
+
+def resolve_student_edu_email(user, input_email: str = None):
+    """解析教育邮箱：优先请求参数，其次当前用户邮箱"""
+    candidate = (input_email or user.email or '').strip().lower()
+    if not candidate:
+        return None, "请先提供教育邮箱或在账号中绑定邮箱"
+    if not is_edu_email(candidate):
+        return None, "仅支持教育邮箱认证（如 *.edu.cn 或 *.edu）"
+    return candidate, None
 
 
 def get_next_deletion_time():
@@ -660,6 +685,111 @@ def change_phone(request):
     except Exception as e:
         logger.error(f"手机号修改失败: {str(e)}")
         return APIResponse.server_error('手机号修改失败，请稍后重试', errors={'exception_type': type(e).__name__, 'exception_message': str(e)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def send_student_edu_verification_code(request):
+    """发送学生教育邮箱认证验证码"""
+    serializer = StudentEduEmailSendCodeSerializer(data=request.data)
+    if not serializer.is_valid():
+        return APIResponse.validation_error(
+            format_validation_errors(serializer.errors)
+        )
+
+    if request.user.user_type != 'student' or not hasattr(request.user, 'student_profile'):
+        return APIResponse.error('仅学生用户可进行教育邮箱认证', 403)
+
+    student = request.user.student_profile
+    if student.verification == 'cas':
+        return APIResponse.error('CAS认证学生无需进行教育邮箱认证', 422)
+
+    edu_email, err = resolve_student_edu_email(request.user, serializer.validated_data.get('email'))
+    if err:
+        return APIResponse.error(err, 422, {'email': [err]})
+
+    if Student.objects.filter(edu_email=edu_email).exclude(id=student.id).exists():
+        return APIResponse.error('该教育邮箱已被其他学生认证使用', 422, {'email': ['该教育邮箱已被其他学生认证使用']})
+
+    # 与现有邮箱验证码逻辑保持一致：复用统一验证码发送能力
+    ok = send_verification_code(edu_email, 'student_edu_verify')
+    if not ok:
+        return APIResponse.server_error('验证码发送失败，请稍后重试')
+
+    return APIResponse.success({
+        'student_verification': {
+            'email': edu_email,
+            'code_type': 'student_edu_verify'
+        }
+    }, "验证码发送成功")
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_student_edu_email(request):
+    """完成学生教育邮箱认证"""
+    serializer = StudentEduEmailVerifySerializer(data=request.data)
+    if not serializer.is_valid():
+        return APIResponse.validation_error(
+            format_validation_errors(serializer.errors)
+        )
+
+    if request.user.user_type != 'student' or not hasattr(request.user, 'student_profile'):
+        return APIResponse.error('仅学生用户可进行教育邮箱认证', 403)
+
+    student = request.user.student_profile
+    if student.verification == 'cas':
+        return APIResponse.error('CAS认证学生无需进行教育邮箱认证', 422)
+
+    edu_email, err = resolve_student_edu_email(request.user, serializer.validated_data.get('email'))
+    if err:
+        return APIResponse.error(err, 422, {'email': [err]})
+
+    if Student.objects.filter(edu_email=edu_email).exclude(id=student.id).exists():
+        return APIResponse.error('该教育邮箱已被其他学生认证使用', 422, {'email': ['该教育邮箱已被其他学生认证使用']})
+
+    ok, msg = validate_email_code(edu_email, serializer.validated_data['email_code'], 'student_edu_verify')
+    if not ok:
+        return APIResponse.error(f'邮箱验证码{msg}', 422, {'email_code': [f'邮箱验证码{msg}']})
+
+    review_enabled = bool(getattr(settings, 'STUDENT_EDU_EMAIL_REVIEW_ENABLED', False))
+    student.edu_email = edu_email
+    student.verification = 'edu_email_pending' if review_enabled else 'edu_email'
+    student.save(update_fields=['edu_email', 'verification', 'updated_at'])
+
+    return APIResponse.success({
+        'student_verification': {
+            'verification': student.verification,
+            'verification_display': student.get_verification_display(),
+            'edu_email': student.edu_email,
+            'review_required': review_enabled
+        }
+    }, "教育邮箱认证成功，待后台审核" if review_enabled else "教育邮箱认证成功")
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_student_edu_email(request):
+    """删除学生教育邮箱认证信息"""
+    if request.user.user_type != 'student' or not hasattr(request.user, 'student_profile'):
+        return APIResponse.error('仅学生用户可删除教育邮箱认证信息', 403)
+
+    student = request.user.student_profile
+    if not student.edu_email and student.verification not in ['edu_email', 'edu_email_pending']:
+        return APIResponse.error('当前无可删除的教育邮箱认证信息', 422)
+
+    student.edu_email = None
+    if student.verification in ['edu_email', 'edu_email_pending']:
+        student.verification = 'unverified'
+    student.save(update_fields=['edu_email', 'verification', 'updated_at'])
+
+    return APIResponse.success({
+        'student_verification': {
+            'verification': student.verification,
+            'verification_display': student.get_verification_display(),
+            'edu_email': student.edu_email
+        }
+    }, "教育邮箱认证信息已删除")
 
 
 @api_view(['POST'])

@@ -340,6 +340,19 @@ CELERY_TIMEZONE = TIME_ZONE
 EMAIL_VERIFICATION_CODE_EXPIRE = 300  # 5分钟
 # 验证码长度
 EMAIL_VERIFICATION_CODE_LENGTH = 6
+# 学生教育邮箱域名白名单（逗号分隔，支持子域匹配）
+STUDENT_EDU_EMAIL_DOMAIN_WHITELIST = [
+    item.strip().lower().lstrip('.').lstrip('@')
+    for item in os.getenv(
+        'STUDENT_EDU_EMAIL_DOMAIN_WHITELIST',
+        'edu.cn,edu'
+    ).split(',')
+    if item.strip()
+]
+# 学生教育邮箱认证是否启用后台审核
+STUDENT_EDU_EMAIL_REVIEW_ENABLED = os.getenv(
+    'STUDENT_EDU_EMAIL_REVIEW_ENABLED', 'False'
+).lower() == 'false'
 # 默认头像URL
 DEFAULT_AVATAR_URL = "/media/avatars/default/avatar_2.svg"
 

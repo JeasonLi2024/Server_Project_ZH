@@ -588,6 +588,17 @@ class EmailCodeSerializer(serializers.Serializer):
     )
 
 
+class StudentEduEmailSendCodeSerializer(serializers.Serializer):
+    """学生教育邮箱验证码发送序列化器"""
+    email = serializers.EmailField(required=False, help_text="教育邮箱（可选，不传时默认使用当前用户邮箱）")
+
+
+class StudentEduEmailVerifySerializer(serializers.Serializer):
+    """学生教育邮箱认证序列化器"""
+    email = serializers.EmailField(required=False, help_text="教育邮箱（可选，不传时默认使用当前用户邮箱）")
+    email_code = serializers.CharField(max_length=10, required=True, help_text="教育邮箱验证码")
+
+
 class TokenVerifySerializer(serializers.Serializer):
     """Token验证序列化器"""
     token = serializers.CharField(required=True)

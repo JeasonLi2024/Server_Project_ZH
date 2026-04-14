@@ -23,7 +23,8 @@ class StudentInline(admin.StackedInline):
     fields = [
         ('student_id', 'school'),
         ('major', 'grade', 'education_level'),
-        ('status', 'expected_graduation')
+        ('status', 'verification'),
+        ('edu_email', 'expected_graduation')
     ]
 
 
@@ -301,10 +302,10 @@ class StudentAdmin(admin.ModelAdmin):
     
     list_display = [
         'id', 'get_user_id', 'get_username', 'get_real_name', 'student_id', 'school', 
-        'major', 'grade', 'status', 'created_at'
+        'major', 'grade', 'status', 'verification', 'edu_email', 'created_at'
     ]
     list_filter = [
-        'school', 'major', 'grade', 'education_level', 'status', 'created_at'
+        'school', 'major', 'grade', 'education_level', 'status', 'verification', 'created_at'
     ]
     search_fields = [
         'user__username',           # 用户名
@@ -326,7 +327,8 @@ class StudentAdmin(admin.ModelAdmin):
             'fields': (
                 ('student_id', 'school'),
                 ('major', 'grade', 'education_level'),
-                ('status', 'expected_graduation')
+                ('status', 'verification'),
+                ('edu_email', 'expected_graduation')
             )
         }),
     )

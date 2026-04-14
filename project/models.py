@@ -128,6 +128,8 @@ class Requirement(models.Model):
     title = models.CharField(max_length=255, verbose_name='标题')
     brief = models.CharField(max_length=255, verbose_name='简介')
     description = models.TextField(verbose_name='详细描述')
+    goal = models.TextField(verbose_name='目标')
+    expected_result = models.TextField(verbose_name='期望成果')
     tag1 = models.ManyToManyField(Tag1, blank=True, verbose_name='兴趣标签')
     tag2 = models.ManyToManyField(Tag2, blank=True, verbose_name='能力标签')
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, verbose_name='状态')
@@ -136,6 +138,8 @@ class Requirement(models.Model):
     finish_time = models.DateField(null=True, blank=True, verbose_name='完成时间')
     budget = models.CharField(max_length=255, verbose_name='预算', null=True, blank=True)
     people_count = models.CharField(max_length=255, verbose_name='人数需求', null=True, blank=True)
+    contact_person = models.CharField(max_length=100, verbose_name='联系人')
+    contact_info = models.CharField(max_length=255, verbose_name='联系方式')
     support_provided = models.TextField(blank=True, null=True, verbose_name='可提供的支持')
     evaluation_criteria = models.ForeignKey(
         'projectscore.EvaluationCriteria',

@@ -194,7 +194,7 @@ class BUPTCASService:
                 user = stu_match.user
                 created = False
             else:
-                email = f"{username}@bupt.edu.cn"
+                email = f"{username}@bupt.cn"
                 user_type = 'organization' if is_teacher else 'student'
                 existing_by_email = User.objects.filter(email=email).first()
                 if existing_by_email:
@@ -246,6 +246,8 @@ class BUPTCASService:
                         stu.grade = year
                     if not stu.school_id:
                         stu.school = school
+                    if stu.verification != 'cas':
+                        stu.verification = 'cas'
                     stu.save()
                 else:
                     # 若此前按 employeeNumber 已匹配到学生档案，保证其 user 一致
@@ -259,6 +261,7 @@ class BUPTCASService:
                                 'school': school,
                                 'major': '',
                                 'grade': year,
+                                'verification': 'cas',
                             }
                         )
             else:
@@ -377,7 +380,7 @@ class BUPTCASService:
                     # 创建新的学生用户
                     user_data = {
                         'username': username,
-                        'email': attributes.get('email', f'{username}@bupt.edu.cn'),
+                        'email': attributes.get('email', f'{username}@bupt.cn'),
                         'real_name': attributes.get('real_name', attributes.get('displayName', '')),
                         'user_type': 'student',
                         'is_active': True,
@@ -493,7 +496,7 @@ class BUPTCASService:
                     # 创建新的教师用户
                     user_data = {
                         'username': username,
-                        'email': attributes.get('email', f'{username}@bupt.edu.cn'),
+                        'email': attributes.get('email', f'{username}@bupt.cn'),
                         'real_name': attributes.get('real_name', attributes.get('displayName', '')),
                         'user_type': 'organization',
                         'is_active': True,

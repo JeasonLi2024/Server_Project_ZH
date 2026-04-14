@@ -23,15 +23,24 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
+# =========================
+# 学生基础信息序列化器
+# =========================
+# 使用说明：
+# - StudentBasicSerializer：仅返回公开基础信息（不含联系方式）
+# - StudentContactSerializer：返回完整联系方式（邮箱、手机号）
+# - StudentMaskedContactSerializer：返回脱敏联系方式（用于隐私保护场景）
 class StudentBasicSerializer(StudentBasicFieldsMixin, serializers.ModelSerializer):
     """学生基本信息序列化器"""
     school = serializers.SerializerMethodField()
+    verification = serializers.CharField(read_only=True)
+    verification_display = serializers.CharField(source='get_verification_display', read_only=True)
     
     class Meta:
         model = Student
         fields = [
             'id', 'student_id', 'school', 'major', 'grade',
-            'real_name', 'username', 'avatar'
+            'real_name', 'username', 'avatar', 'verification', 'verification_display'
         ]
     
     def get_school(self, obj):
@@ -49,12 +58,16 @@ class StudentContactSerializer(StudentBasicFieldsMixin, serializers.ModelSeriali
     school = serializers.SerializerMethodField()
     email = serializers.EmailField(source='user.email', read_only=True)
     phone = serializers.CharField(source='user.phone', read_only=True)
+    verification = serializers.CharField(read_only=True)
+    verification_display = serializers.CharField(source='get_verification_display', read_only=True)
+    edu_email = serializers.EmailField(read_only=True)
     
     class Meta:
         model = Student
         fields = [
             'id', 'student_id', 'school', 'major', 'grade',
-            'real_name', 'username', 'avatar', 'email', 'phone'
+            'real_name', 'username', 'avatar', 'email', 'phone',
+            'verification', 'verification_display', 'edu_email'
         ]
     
     def get_school(self, obj):
@@ -72,12 +85,16 @@ class StudentMaskedContactSerializer(StudentBasicFieldsMixin, ContactMixin, seri
     school = serializers.SerializerMethodField()
     email = serializers.SerializerMethodField()
     phone = serializers.SerializerMethodField()
+    edu_email = serializers.SerializerMethodField()
+    verification = serializers.CharField(read_only=True)
+    verification_display = serializers.CharField(source='get_verification_display', read_only=True)
     
     class Meta:
         model = Student
         fields = [
             'id', 'student_id', 'school', 'major', 'grade',
-            'real_name', 'username', 'avatar', 'email', 'phone'
+            'real_name', 'username', 'avatar', 'email', 'phone',
+            'verification', 'verification_display', 'edu_email'
         ]
     
     def get_school(self, obj):
@@ -88,6 +105,21 @@ class StudentMaskedContactSerializer(StudentBasicFieldsMixin, ContactMixin, seri
                 'name': obj.school.school
             }
         return None
+
+    def get_edu_email(self, obj):
+        """获取脱敏教育邮箱"""
+        edu_email = getattr(obj, 'edu_email', None)
+        if not edu_email:
+            return None
+        parts = edu_email.split('@')
+        if len(parts) != 2:
+            return edu_email
+        username, domain = parts
+        if len(username) > 2:
+            masked_username = username[:2] + '*' * (len(username) - 2)
+        else:
+            masked_username = username[0] + '*' * (len(username) - 1)
+        return f"{masked_username}@{domain}"
 
 
 class RequirementBasicSerializer(serializers.ModelSerializer):
@@ -107,19 +139,12 @@ class RequirementBasicSerializer(serializers.ModelSerializer):
         ]
 
 
-class ProjectParticipantSerializer(AvatarMixin, serializers.ModelSerializer):
-    """项目参与者序列化器"""
-    student = StudentBasicSerializer(read_only=True)
-    student_id = serializers.IntegerField(write_only=True)
-
-    
-    class Meta:
-        model = ProjectParticipant
-        fields = [
-            'id', 'student', 'student_id', 'role', 'status',
-        ]
-
-
+# =========================
+# 项目参与者序列化器
+# =========================
+# 使用说明：
+# - ProjectParticipantDetailSerializer 负责“参与者信息”输出；
+# - 其 student 字段会根据访问者权限自动选择“完整联系方式”或“脱敏联系方式”。
 class ProjectParticipantDetailSerializer(AvatarMixin, serializers.ModelSerializer):
     """项目参与者详情序列化器（支持脱敏）"""
     student = serializers.SerializerMethodField()
@@ -172,6 +197,12 @@ class ProjectParticipantDetailSerializer(AvatarMixin, serializers.ModelSerialize
         return False
 
 
+# =========================
+# 项目成果序列化器
+# =========================
+# 使用说明：
+# - ListSerializer：用于列表、摘要场景
+# - DetailSerializer：用于详情、提交返回场景
 class ProjectDeliverableListSerializer(serializers.ModelSerializer):
     """项目成果列表序列化器"""
     submitter = StudentBasicSerializer(read_only=True)
@@ -238,6 +269,13 @@ class ProjectDeliverableDetailSerializer(FilesMixin, serializers.ModelSerializer
 # 旧的ProjectCommentSerializer已移除，使用下方更完整的版本
 
 
+# =========================
+# 学生项目序列化器
+# =========================
+# 使用说明：
+# - StudentProjectListSerializer：项目列表页
+# - StudentProjectDetailSerializer：项目详情页
+# - StudentProjectCreate/UpdateSerializer：创建、更新入参校验
 class StudentProjectListSerializer(LeaderMixin, serializers.ModelSerializer):
     """学生项目列表序列化器"""
     requirement = RequirementBasicSerializer(read_only=True)
@@ -248,7 +286,7 @@ class StudentProjectListSerializer(LeaderMixin, serializers.ModelSerializer):
     class Meta:
         model = StudentProject
         fields = [
-            'id', 'title', 'description', 'requirement', 'status',
+            'id', 'title', 'description', 'contact_info', 'requirement', 'status',
             'leader', 'participant_count', 'deliverable_count',
             'created_at', 'updated_at'
         ]
@@ -273,7 +311,7 @@ class StudentProjectDetailSerializer(LeaderMixin, serializers.ModelSerializer):
     class Meta:
         model = StudentProject
         fields = [
-            'id', 'title', 'description', 'requirement', 'requirement_id',
+            'id', 'title', 'description', 'contact_info', 'requirement', 'requirement_id',
             'status', 'participants', 'deliverables', 'recent_comments',
             'leader', 'evaluation_info', 'is_evaluated', 'created_at', 'updated_at'
         ]
@@ -366,7 +404,10 @@ class StudentProjectCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = StudentProject
-        fields = ['title', 'description', 'requirement', 'status']
+        fields = ['title', 'description', 'contact_info', 'requirement', 'status']
+        extra_kwargs = {
+            'contact_info': {'required': True, 'allow_blank': False}
+        }
     
     def validate_requirement(self, value):
         """验证需求是否允许关联"""
@@ -391,8 +432,11 @@ class StudentProjectUpdateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = StudentProject
-        fields = ['title', 'description', 'status']
+        fields = ['title', 'description', 'contact_info', 'status']
         # requirement字段在更新时通常不允许修改
+        extra_kwargs = {
+            'contact_info': {'required': False, 'allow_blank': False}
+        }
     
     def update(self, instance, validated_data):
         """更新项目并发送状态变更通知"""
@@ -417,10 +461,15 @@ class StudentProjectUpdateSerializer(serializers.ModelSerializer):
         return updated_instance
 
 
-
-
-
-# 用于申请加入项目的序列化器
+# =========================
+# 参与申请 / 审核 / 身份流转序列化器
+# =========================
+# 使用说明：
+# - ProjectApplicationSerializer：申请加入项目
+# - UnifiedApplicationReviewSerializer：统一处理单个/批量审核
+# - ParticipantSerializer：参与者列表/详情统一输出（detail_mode 控制联系方式完整度）
+# - ParticipantStatusUpdateSerializer：成员状态变更（含退出）
+# - LeadershipTransferSerializer：负责人转移
 class ProjectApplicationSerializer(serializers.Serializer):
     """项目申请序列化器"""
     project_id = serializers.IntegerField()
@@ -503,46 +552,25 @@ class InvitationResponseSerializer(serializers.Serializer):
     )
 
 
-# 用于审核申请的序列化器
-class ApplicationReviewSerializer(ReviewMixin, serializers.Serializer):
-    """申请审核序列化器"""
-
-
-class BatchApplicationReviewSerializer(ReviewMixin, serializers.Serializer):
-    """批量申请审核序列化器"""
-    participant_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        min_length=1,
-        help_text="参与者ID列表"
-    )
-
-    def validate_participant_ids(self, value):
-        """验证参与者ID列表"""
-        if len(value) != len(set(value)):
-            raise serializers.ValidationError("参与者ID列表中不能有重复项")
-        return value
-
-
 class ParticipantSerializer(serializers.ModelSerializer):
     """参与者序列化器（支持详情和列表模式）"""
     student = serializers.SerializerMethodField()
     applied_at = serializers.DateTimeField(read_only=True)
-    approved_at = serializers.DateTimeField(read_only=True)
-    
+    reviewed_at = serializers.DateTimeField(read_only=True)
+
     class Meta:
         model = ProjectParticipant
         fields = [
             'id', 'student', 'role', 'status', 'application_message',
-            'review_message', 'applied_at', 'approved_at'
+            'review_message', 'applied_at', 'reviewed_at'
         ]
-    
+
     def get_student(self, obj):
         """根据上下文返回不同详细程度的学生信息"""
         detail_mode = self.context.get('detail_mode', False)
         if detail_mode:
             return StudentContactSerializer(obj.student, context=self.context).data
-        else:
-            return StudentBasicSerializer(obj.student, context=self.context).data
+        return StudentBasicSerializer(obj.student, context=self.context).data
 
 
 # 为了向后兼容，保留别名
@@ -613,6 +641,9 @@ class LeadershipTransferSerializer(serializers.Serializer):
         return value
 
 
+# =========================
+# 成果提交 / 更新序列化器
+# =========================
 class ProjectDeliverableSubmitSerializer(CloudLinkMixin, serializers.ModelSerializer):
     """项目成果提交序列化器"""
     files_ids = serializers.CharField(
@@ -807,6 +838,9 @@ class ProjectDeliverableSubmitSerializer(CloudLinkMixin, serializers.ModelSerial
         return file_obj
 
 
+# =========================
+# 评论序列化器
+# =========================
 class ProjectCommentSerializer(AuthorInfoMixin, serializers.ModelSerializer):
     """项目评论序列化器"""
     author_info = serializers.SerializerMethodField()

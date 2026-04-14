@@ -105,6 +105,7 @@ def send_email_verification_code_db(email, code_type='register'):
             'reset_password': '【校企对接平台】重置密码验证码',
             'change_email': '【校企对接平台】更换邮箱验证码',
             'delete_account': '【校企对接平台】账户注销验证码',
+            'student_edu_verify': '【校企对接平台】学生教育邮箱认证验证码',
         }
         
         message_map = {
@@ -113,6 +114,7 @@ def send_email_verification_code_db(email, code_type='register'):
             'reset_password': f'您的重置密码验证码是：{code}，有效期5分钟，请勿泄露给他人。',
             'change_email': f'您的更换邮箱验证码是：{code}，有效期5分钟，请勿泄露给他人。',
             'delete_account': f'您的账户注销验证码是：{code}，有效期5分钟，请勿泄露给他人。此操作将永久删除您的账户，请谨慎操作。',
+            'student_edu_verify': f'您的学生教育邮箱认证验证码是：{code}，有效期5分钟，请勿泄露给他人。',
         }
         
         subject = subject_map.get(code_type, '【校企对接平台】验证码')

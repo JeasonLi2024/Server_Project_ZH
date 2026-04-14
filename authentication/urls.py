@@ -26,6 +26,9 @@ urlpatterns = [
     # 邮箱相关
     path('change_email/', views.change_email, name='change_email'),
     path('change_phone/', views.change_phone, name='change_phone'),
+    path('student-edu/send-code/', views.send_student_edu_verification_code, name='send_student_edu_verification_code'),
+    path('student-edu/verify/', views.verify_student_edu_email, name='verify_student_edu_email'),
+    path('student-edu/', views.delete_student_edu_email, name='delete_student_edu_email'),
     
     # 登录日志
     path('login-logs/', views.login_logs, name='login_logs'),
