@@ -287,9 +287,18 @@ sudo docker compose logs --tail=200 minio
 4. 重启服务：
 
 ```bash
-sudo docker compose restart standalone
-sudo docker compose restart minio
+# 推荐：全量重启（优先，避免 etcd 会话不一致）
+sudo docker compose down
+sudo docker compose up -d
+
+# 若必须单服务重启，按顺序执行（禁止只重启 etcd 后直接放行流量）
 sudo docker compose restart etcd
+sudo docker compose restart minio
+sudo docker compose restart standalone
+
+# 重启后必须进行健康确认
+sudo docker compose ps -a
+ss -ltn | grep -E ':19530|:9091|:9000|:9001|:2379'
 ```
 
 5. 停止服务：
@@ -302,6 +311,23 @@ sudo docker compose down
 
 ```bash
 ss -ltn | grep -E ':19530|:9091|:9000|:9001'
+```
+
+7. 运行可观测巡检（建议接入 crontab/systemd timer）：
+
+```bash
+cd /home/bupt/Server_Project_ZH
+./additional_tool_test/milvus_observability_check.sh
+```
+
+说明：
+- 脚本会优先直接执行 `docker compose`；若无权限，会尝试 `sudo -n docker compose`。
+- 若机器未配置 docker 组权限或 `sudo -n`，请在 root crontab 执行，或配置最小化 NOPASSWD 规则。
+
+8. 每 1 分钟巡检示例（crontab）：
+
+```bash
+* * * * * /home/bupt/Server_Project_ZH/additional_tool_test/milvus_observability_check.sh >> /home/bupt/Server_Project_ZH/logs/milvus_observability_cron.log 2>&1
 ```
 
 ### 五、项目侧快速连通性验证
@@ -349,9 +375,27 @@ PY
      - 使用 Python 直连脚本验证 `utility.list_collections()`
      - 检查集合名与业务代码一致（`project_embeddings`/`project_raw_docs`/`enterprise_vectors`）
 
-5. **`version is obsolete` 告警**
-   - 含义：`docker-compose.yml` 中 `version:` 字段在新 Compose 中已废弃。
-   - 影响：通常不影响运行，可在后续维护时移除该字段以减少噪音告警。
+5. **出现 `version is obsolete` 告警**
+   - 含义：当前执行的 compose 文件仍包含 `version:` 字段（新 Compose 已废弃该字段）。
+   - 处理：统一使用 `/mnt/data/milvus/docker-compose.yml`（本文件已移除 `version` 字段）；若仍告警，说明执行到了其他 compose 文件，请先确认路径。
+
+### 七、操作顺序规范（强约束）
+
+1. 统一入口：仅使用 `/mnt/data/milvus/docker-compose.yml` 运维 Milvus。
+2. 变更前检查：先执行 `sudo docker compose ps -a` 与 `ss -ltn | grep -E ':19530|:9091|:9000|:9001|:2379'`。
+3. 重启策略：默认全量 `down/up`，减少 etcd lease 残留导致的会话不一致。
+4. 单服务重启顺序：`etcd -> minio -> standalone`，并在 `standalone` 重启完成后再恢复业务流量。
+5. 严禁动作：禁止“只重启 etcd 后不重启 standalone”；该操作可能触发 `requested lease not found` 链路。
+6. 变更后校验：必须执行 Python 直连脚本（见第五节）验证 `utility.list_collections()` 成功。
+7. 失败回滚：若 2 分钟内未恢复，立即执行 `sudo docker compose down && sudo docker compose up -d`，并保留故障窗口日志。
+
+### 八、可观测与告警建议
+
+1. 已提供巡检脚本：`/home/bupt/Server_Project_ZH/additional_tool_test/milvus_observability_check.sh`。
+2. 巡检覆盖项：compose 状态、19530/9091 端口监听、pymilvus 连接与集合枚举。
+3. 告警信号：脚本输出 `[ALERT]` 时视为故障；可由 crontab + 日志采集平台触发短信/邮件。
+4. 日志位置：`/home/bupt/Server_Project_ZH/logs/milvus_observability.log`。
+5. 告警阈值建议：连续 2 次（约 2 分钟）失败触发 P1，连续 1 次失败触发 P2 值班关注。
 
 ## （不再需要）安装配置 Ollama Embeddings - bge-m3:567模型
 1. 安装Ollama：根据[Ollama官方文档](https://ollama.ai/docs/installation)安装Ollama，Linux环境下可直接使用：

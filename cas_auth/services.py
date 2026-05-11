@@ -15,6 +15,18 @@ from user.models import OrganizationUser, Student
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
+COMMON_COMPOUND_SURNAMES = {
+    '欧阳', '太史', '端木', '上官', '司马', '东方', '独孤', '南宫', '万俟', '闻人',
+    '夏侯', '诸葛', '尉迟', '公羊', '赫连', '澹台', '皇甫', '宗政', '濮阳', '公冶',
+    '太叔', '申屠', '公孙', '慕容', '仲孙', '钟离', '长孙', '宇文', '司徒', '鲜于',
+    '司空', '闾丘', '子车', '亓官', '司寇', '巫马', '公西', '颛孙', '壤驷', '公良',
+    '漆雕', '乐正', '宰父', '谷梁', '拓跋', '夹谷', '轩辕', '令狐', '段干', '百里',
+    '呼延', '东郭', '南门', '羊舌', '微生', '公户', '公玉', '公仪', '梁丘', '公仲',
+    '公上', '公门', '公山', '公坚', '左丘', '公伯', '西门', '公祖', '第五', '公乘',
+    '贯丘', '公皙', '南荣', '东里', '东宫', '仲长', '子书', '子桑', '即墨', '达奚',
+    '褚师',
+}
+
 
 class BUPTCASService:
     """北邮CAS认证服务类"""
@@ -145,6 +157,36 @@ class BUPTCASService:
         except ET.ParseError as e:
             logger.error(f"CAS XML parsing error: {str(e)}")
             return False, {'error': f'XML解析错误: {str(e)}'}
+
+    def _extract_surname(self, real_name: str) -> str:
+        name = (real_name or '').strip()
+        if not name:
+            return ''
+        if len(name) >= 2 and name[:2] in COMMON_COMPOUND_SURNAMES:
+            return name[:2]
+        return name[0]
+
+    def _build_privacy_username(self, cas_user_id: str, real_name: str, is_teacher: bool) -> str:
+        surname = self._extract_surname(real_name)
+        if not surname:
+            return cas_user_id
+
+        role_suffix = '老师' if is_teacher else '同学'
+        base_username = f"{surname}{role_suffix}"
+        if not User.objects.filter(username=base_username).exists():
+            return base_username
+
+        suffix = (cas_user_id or '')[-4:] or '0000'
+        candidate = f"{base_username}_{suffix}"
+        if not User.objects.filter(username=candidate).exists():
+            return candidate
+
+        counter = 2
+        while True:
+            candidate_with_counter = f"{candidate}_{counter}"
+            if not User.objects.filter(username=candidate_with_counter).exists():
+                return candidate_with_counter
+            counter += 1
     
     def sync_cas_user(self, cas_user_data: Dict, request_info: Dict = None) -> Tuple[User, bool]:
         """基于 `<cas:user>` 作为用户名查询/创建，并按前缀规则分流存储"""
@@ -152,7 +194,7 @@ class BUPTCASService:
         attributes = cas_user_data.get('attributes', {})
         if not cas_user_id:
             raise ValueError("CAS用户ID不能为空")
-        username = cas_user_id
+        identifier = cas_user_id
         real_name = attributes.get('real_name') or attributes.get('name') or ''
         employee_number = attributes.get('employee_id') or None
 
@@ -167,13 +209,13 @@ class BUPTCASService:
             stu_match = StudentModel.objects.select_related('user').filter(student_id=employee_number).first()
         else:
             # 无 employeeNumber 时用 cas_user_id 兜底匹配
-            org_match = OrgUserModel.objects.select_related('user').filter(employee_id=username).first()
-            stu_match = StudentModel.objects.select_related('user').filter(student_id=username).first()
+            org_match = OrgUserModel.objects.select_related('user').filter(employee_id=identifier).first()
+            stu_match = StudentModel.objects.select_related('user').filter(student_id=identifier).first()
 
         # 根据相关标准规定，学号（工号）编码为10位数字“WWWWXYZZZZ”，其中X=8，9表示教职工
         is_teacher = False
-        if username and len(username) == 10 and username.isdigit():
-            if username[4] in ('8', '9'):
+        if identifier and len(identifier) == 10 and identifier.isdigit():
+            if identifier[4] in ('8', '9'):
                 is_teacher = True
         
         # 兼容旧逻辑：如果规则未明确（非10位数字）但本地已有教师档案，维持教师身份
@@ -194,13 +236,12 @@ class BUPTCASService:
                 user = stu_match.user
                 created = False
             else:
-                email = f"{username}@bupt.cn"
+                email = f"{identifier}@bupt.cn"
                 user_type = 'organization' if is_teacher else 'student'
+                privacy_username = self._build_privacy_username(identifier, real_name, is_teacher)
                 existing_by_email = User.objects.filter(email=email).first()
                 if existing_by_email:
                     user = existing_by_email
-                    if user.username != username:
-                        user.username = username
                     user.real_name = real_name
                     user.user_type = user_type
                     user.is_active = True
@@ -209,7 +250,7 @@ class BUPTCASService:
                 else:
                     try:
                         user = User.objects.create_user(
-                            username=username,
+                            username=privacy_username,
                             email=email,
                             real_name=real_name,
                             user_type=user_type,
@@ -218,8 +259,6 @@ class BUPTCASService:
                         created = True
                     except IntegrityError:
                         user = User.objects.get(email=email)
-                        if user.username != username:
-                            user.username = username
                         user.real_name = real_name
                         user.user_type = user_type
                         user.is_active = True
@@ -229,7 +268,7 @@ class BUPTCASService:
             # 学生分支：创建/补全 Student，并确保 school=北京邮电大学，grade=前四位
             if not is_teacher:
                 from organization.models import University
-                year = username[:4] if username[:4].isdigit() else '2024'
+                year = identifier[:4] if identifier[:4].isdigit() else '2024'
                 # 获取或创建学校
                 try:
                     school = University.objects.get(id=university_id)
@@ -241,7 +280,7 @@ class BUPTCASService:
                 if hasattr(user, 'student_profile'):
                     stu = user.student_profile
                     if not stu.student_id:
-                        stu.student_id = username
+                        stu.student_id = identifier
                     if not stu.grade:
                         stu.grade = year
                     if not stu.school_id:
@@ -257,7 +296,7 @@ class BUPTCASService:
                         StudentModel.objects.get_or_create(
                             user=user,
                             defaults={
-                                'student_id': username,
+                                'student_id': identifier,
                                 'school': school,
                                 'major': '',
                                 'grade': year,
@@ -281,14 +320,14 @@ class BUPTCASService:
                 if hasattr(user, 'organization_profile'):
                     org_user = user.organization_profile
                     org_user.organization = org
-                    ident = employee_number or username
+                    ident = employee_number or identifier
                     if not org_user.employee_id:
                         org_user.employee_id = ident
                     elif org_user.employee_id != ident:
                         org_user.employee_id = ident
                     org_user.permission = 'member'
                     org_user.status = 'approved'
-                    org_user.cas_user_id = username
+                    org_user.cas_user_id = identifier
                     org_user.auth_source = 'cas'
                     org_user.last_cas_login = timezone.now()
                     org_user.save()
@@ -296,12 +335,12 @@ class BUPTCASService:
                     OrganizationUser.objects.create(
                         user=user,
                         organization=org,
-                        employee_id=employee_number or username,
+                        employee_id=employee_number or identifier,
                         position='',
                         department='',
                         permission='member',
                         status='approved',
-                        cas_user_id=username,
+                        cas_user_id=identifier,
                         auth_source='cas',
                         last_cas_login=timezone.now(),
                     )

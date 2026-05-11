@@ -4,10 +4,14 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import logout as django_logout
 from django.utils import timezone
+from django.db.models import Prefetch
 import logging
 
 from .models import User, Tag1, Tag2
-from .serializers import UserProfileSerializer, UserUpdateSerializer, AvatarUploadSerializer, Tag1Serializer, Tag2Serializer
+from .serializers import (
+    UserProfileSerializer, UserUpdateSerializer, AvatarUploadSerializer,
+    Tag1Serializer, Tag2Serializer, UserRecommendationProfileSerializer
+)
 from .services import UserHistoryService
 from common_utils import APIResponse, format_validation_errors, build_media_url, paginate_queryset
 from project.serializers import RequirementSerializer
@@ -35,6 +39,31 @@ def profile(request):
     except Exception as e:
         logger.error(f"获取用户资料失败: {str(e)}")
         return APIResponse.server_error('获取用户资料失败，请稍后重试')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recommendation_profile(request):
+    """获取用户推荐画像信息"""
+    try:
+        user = User.objects.select_related(
+            'student_profile',
+            'student_profile__school',
+            'student_profile__recommend_profile_current',
+        ).prefetch_related(
+            'student_profile__interests',
+            Prefetch('student_profile__skills', queryset=Tag2.objects.filter(level=2)),
+            'student_profile__recommend_profile_evidences',
+        ).get(id=request.user.id)
+
+        serializer = UserRecommendationProfileSerializer(user, context={'request': request})
+        return APIResponse.success(serializer.data)
+
+    except User.DoesNotExist:
+        return APIResponse.not_found('用户不存在')
+    except Exception as e:
+        logger.error(f"获取用户推荐画像失败: {str(e)}")
+        return APIResponse.server_error('获取用户推荐画像失败，请稍后重试')
 
 
 @api_view(['PATCH'])

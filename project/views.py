@@ -785,13 +785,15 @@ def list_requirements(request):
             candidate_cache_key = f"recommend_candidates_{request.user.id}"
             candidate_ids = cache.get(candidate_cache_key)
             
-            if not candidate_ids:
+            if candidate_ids is None:
                 try:
-                    candidate_ids = RecommendationService.generate_candidates(request.user.id)
+                    candidate_ids = RecommendationService.generate_candidates(
+                        request.user.id,
+                        defer_vector_on_cache_miss=True
+                    )
                     
                     # 写入缓存 (10分钟)
-                    if candidate_ids:
-                        cache.set(candidate_cache_key, candidate_ids, 600)
+                    cache.set(candidate_cache_key, candidate_ids or [], 600)
                     
                 except Exception as e:
                     logger.error(f"双路推荐算法执行失败 (View): {str(e)}")

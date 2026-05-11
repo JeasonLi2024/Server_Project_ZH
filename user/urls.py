@@ -6,6 +6,7 @@ app_name = 'user'
 urlpatterns = [
     # 用户资料管理
     path('profile/', views.profile, name='profile'),
+    path('profile/recommendation/', views.recommendation_profile, name='recommendation_profile'),
     path('update-profile/', views.update_profile, name='update_profile'),
     path('upload-avatar/', views.upload_avatar, name='upload_avatar'),
     

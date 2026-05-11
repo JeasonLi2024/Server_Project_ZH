@@ -338,6 +338,43 @@ def update_user_dynamic_tags_task(user_id, requirement_id, action_type):
     except Exception as e:
         logger.error(f"Error updating dynamic tags: {e}")
 
+
+@shared_task
+def warmup_user_recommendation_cache_task(user_id):
+    """
+    预热学生推荐缓存：先计算 user_query_vector，再生成候选集。
+    用于把高耗时向量化计算移出首访请求链路。
+    """
+    if not user_id:
+        return
+
+    from user.models import Student
+    from project.services import RecommendationService
+
+    try:
+        student = Student.objects.select_related('user').get(user_id=user_id)
+
+        # 强制计算向量（不降级）
+        RecommendationService.calculate_user_vector(
+            user_id,
+            student,
+            defer_on_cache_miss=False
+        )
+
+        candidate_ids = RecommendationService.generate_candidates(
+            user_id,
+            student_profile=student,
+            defer_vector_on_cache_miss=False
+        )
+
+        if candidate_ids:
+            cache.set(f"recommend_candidates_{user_id}", candidate_ids, 600)
+
+    except Student.DoesNotExist:
+        logger.warning(f"warmup skipped: student profile not found for user {user_id}")
+    except Exception as e:
+        logger.error(f"warmup_user_recommendation_cache_task failed for user {user_id}: {e}")
+
 @shared_task
 def generate_daily_candidates_task(user_id=None):
     """

@@ -293,6 +293,14 @@ def login(request):
     
     # 序列化用户完整信息
     user_serializer = UserProfileSerializer(user, context={'request': request})
+
+    # 学生用户登录后异步预热推荐缓存，降低首次访问推荐列表时延
+    if getattr(user, 'user_type', None) == 'student':
+        try:
+            from project.tasks import warmup_user_recommendation_cache_task
+            warmup_user_recommendation_cache_task.delay(user.id)
+        except Exception as e:
+            logger.warning(f"触发推荐缓存预热任务失败: {e}")
     
     return APIResponse.success({
         'user': user_serializer.data,

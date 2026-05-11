@@ -478,3 +478,69 @@ class Tag2StuMatch(models.Model):
     
     def __str__(self):
         return f"学生ID:{self.student.id} - {self.tag2}"
+
+
+class StudentProfileCurrent(models.Model):
+    """学生推荐画像当前态"""
+
+    student = models.OneToOneField(
+        Student,
+        on_delete=models.CASCADE,
+        related_name='recommend_profile_current',
+        verbose_name='学生'
+    )
+    profile_summary = models.TextField('画像摘要', max_length=300, blank=True, default='')
+    candidate_interest_tags_json = models.JSONField('候选兴趣标签', default=list, blank=True)
+    candidate_skill_tags_json = models.JSONField('候选能力标签', default=list, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'student_profile_current'
+        verbose_name = '09-学生推荐画像当前态'
+        verbose_name_plural = '09-学生推荐画像当前态'
+        indexes = [
+            models.Index(fields=['updated_at'], name='stu_prof_cur_updated_idx'),
+        ]
+
+    def __str__(self):
+        return f"学生画像当前态:{self.student_id}"
+
+
+class StudentProfileEvidence(models.Model):
+    """学生推荐画像证据层"""
+
+    EVIDENCE_TYPE_CHOICES = [
+        ('dialogue', '对话'),
+        ('manual', '人工确认'),
+        ('import', '导入'),
+        ('db_read', '主档读取'),
+        ('file', '文件'),
+    ]
+
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.CASCADE,
+        related_name='recommend_profile_evidences',
+        verbose_name='学生'
+    )
+    evidence_type = models.CharField('证据类型', max_length=20, choices=EVIDENCE_TYPE_CHOICES, default='dialogue')
+    evidence_text = models.TextField('证据文本')
+    field_mapping_json = models.JSONField('字段映射', default=dict, blank=True)
+    evidence_confidence = models.DecimalField('证据置信度', max_digits=4, decimal_places=2, default=0.80)
+    source = models.CharField('来源', max_length=50, blank=True, default='agent')
+    session_id = models.CharField('会话ID', max_length=100, blank=True, null=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        db_table = 'student_profile_evidence'
+        verbose_name = '10-学生推荐画像证据'
+        verbose_name_plural = '10-学生推荐画像证据'
+        indexes = [
+            models.Index(fields=['student', 'created_at'], name='stu_prof_evd_stu_created_idx'),
+            models.Index(fields=['session_id'], name='stu_prof_evd_session_idx'),
+            models.Index(fields=['evidence_type'], name='stu_prof_evd_type_idx'),
+        ]
+
+    def __str__(self):
+        return f"学生画像证据:{self.student_id}-{self.evidence_type}"

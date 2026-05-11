@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import User, Student, OrganizationUser, Tag1, Tag2, Tag1StuMatch, Tag2StuMatch
+from .models import (
+    User, Student, OrganizationUser, Tag1, Tag2, Tag1StuMatch, Tag2StuMatch,
+    StudentProfileCurrent, StudentProfileEvidence
+)
 from authentication.utils import get_default_avatar_url
 from common_utils import build_media_url
 import os
@@ -111,6 +114,97 @@ class StudentProfileSerializer(serializers.ModelSerializer):
                 'name': obj.school.school
             }
         return None
+
+
+class StudentProfileCurrentSerializer(serializers.ModelSerializer):
+    """学生推荐画像当前态序列化器"""
+
+    class Meta:
+        model = StudentProfileCurrent
+        fields = [
+            'profile_summary',
+            'candidate_interest_tags_json',
+            'candidate_skill_tags_json',
+            'created_at',
+            'updated_at',
+        ]
+
+
+class StudentProfileEvidenceSerializer(serializers.ModelSerializer):
+    """学生推荐画像证据序列化器"""
+
+    class Meta:
+        model = StudentProfileEvidence
+        fields = [
+            'id',
+            'evidence_type',
+            'evidence_text',
+            'field_mapping_json',
+            'evidence_confidence',
+            'source',
+            'session_id',
+            'created_at',
+        ]
+
+
+class UserRecommendationProfileSerializer(serializers.ModelSerializer):
+    """用户推荐画像详情序列化器"""
+
+    student_profile = serializers.SerializerMethodField()
+    confirmed_interest_tags = serializers.SerializerMethodField()
+    confirmed_skill_tags = serializers.SerializerMethodField()
+    recommendation_profile_current = serializers.SerializerMethodField()
+    recent_profile_evidences = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'username',
+            'real_name',
+            'user_type',
+            'student_profile',
+            'confirmed_interest_tags',
+            'confirmed_skill_tags',
+            'recommendation_profile_current',
+            'recent_profile_evidences',
+        ]
+
+    def _get_student(self, obj):
+        if obj.user_type == 'student' and hasattr(obj, 'student_profile'):
+            return obj.student_profile
+        return None
+
+    def get_student_profile(self, obj):
+        student = self._get_student(obj)
+        if not student:
+            return None
+        return StudentProfileSerializer(student).data
+
+    def get_confirmed_interest_tags(self, obj):
+        student = self._get_student(obj)
+        if not student:
+            return []
+        return Tag1Serializer(student.interests.all(), many=True).data
+
+    def get_confirmed_skill_tags(self, obj):
+        student = self._get_student(obj)
+        if not student:
+            return []
+        return Tag2Serializer(student.skills.filter(level=2), many=True).data
+
+    def get_recommendation_profile_current(self, obj):
+        student = self._get_student(obj)
+        if not student or not hasattr(student, 'recommend_profile_current'):
+            return None
+        return StudentProfileCurrentSerializer(student.recommend_profile_current).data
+
+    def get_recent_profile_evidences(self, obj):
+        student = self._get_student(obj)
+        if not student:
+            return []
+        evidences = student.recommend_profile_evidences.all().order_by('-created_at')[:10]
+        return StudentProfileEvidenceSerializer(evidences, many=True).data
 
 
 class StudentProfileUpdateSerializer(serializers.ModelSerializer):

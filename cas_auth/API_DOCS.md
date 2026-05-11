@@ -1,413 +1,359 @@
-# CAS统一认证系统接口文档
+# CAS统一认证系统接口文档（按当前代码实现）
 
-## 概述
+## 1. 适用范围与路径
+- 模块目录：`cas_auth/`
+- 后端路由前缀：`/api/v1/cas/`
+- 反向代理前缀（如部署启用）：`/rch/api/v1/cas/`
+- 当前代码接口数量：5 个
+  - `GET /login/`
+  - `GET /callback/`
+  - `GET|POST /logout/`
+  - `GET /status/`
+  - `GET /user-info/`
 
-CAS（Central Authentication Service）统一认证系统提供单点登录（SSO）能力，当前项目已集成北京邮电大学统一认证平台，支持 CAS 2.0/3.0。后端路由保持 `/api/v1` 前缀不变；外部通过反向代理挂载到 `https://llm.bupt.edu.cn/rch/`，因此前端对外调用路径为 `/rch/api/v1/...`。该文档说明各接口的使用时机与前端调用方式。
+### 1.1 内外网地址映射（部署时）
+| 场景 | 典型地址 |
+|---|---|
+| CAS服务器地址 | `https://auth.bupt.edu.cn/authserver` |
+| 前端域名（当前环境） | `https://zhihui.bupt.edu.cn` |
+| 对外API前缀（网关） | `https://<对外域名>/rch/api/v1/cas/` |
+| 后端真实路由（Django） | `/api/v1/cas/` |
 
-## 总体流程（前端视角）
-- 未登录访问受保护页面 → 调用“获取登录地址”接口 → 跳转到统一认证登录页
-- 登录成功后统一认证回调到“回调接口”并携带 `ticket`
-- 后端校验 `ticket`，同步/创建用户并签发 `JWT`（access/refresh）
-- 前端存储令牌并进入应用；需要登出时调用“登出接口”，后端黑名单化令牌并返回统一认证登出地址，前端跳转
+说明：
+- 若网关配置了 `PROXY_PATH_PREFIX=/rch`，前端应统一走 `/rch/api/v1/...`。
+- 后端代码中的 URL 匹配不带 `/rch`，该前缀由网关层处理。
 
-## 接口列表与使用时机
+### 1.2 当前环境结论（按现有代码与配置）
+- 当前 `.env` 配置为 `PROXY_PATH_PREFIX=`（空），应用层未启用 `/rch` 前缀。
+- Django 在代码层实际匹配路径是 `/api/v1/cas/...`。
+- 文档中出现的 `/rch/api/v1/cas/...` 仅在“部署网关已配置路径前缀转发”时成立。
+- 因此联调时请按实际入口二选一：
+  - 直连后端：`/api/v1/cas/...`
+  - 经过网关且网关加了 `/rch`：`/rch/api/v1/cas/...`
 
-### 1. 获取登录地址
+## 2. 统一响应格式
+所有接口使用 `common_utils.APIResponse`：
 
-**对外地址：** `GET /rch/api/v1/cas/login/`
-**后端路由：** `GET /api/v1/cas/login/`
-
-**功能描述：** 获取CAS登录URL，用于重定向用户到CAS认证服务器进行身份验证
-
-**权限要求：**
-- 无需用户登录认证
-- 公开访问接口
-
-**查询参数：**
-| 参数名 | 类型 | 必填 | 默认值 | 描述 |
-|--------|------|------|--------|------|
-| service | string | 否 | 系统配置的回调URL | 认证成功后的回调地址 |
-
-**响应格式：**
 ```json
 {
+  "status": "success|error",
   "code": 200,
-  "message": "请重定向到CAS登录页面",
-  "data": {
-    "login_url": "https://auth.bupt.edu.cn/authserver/login?service=https%3A//llm.bupt.edu.cn/rch/api/v1/cas/callback/",
-    "service_url": "https://llm.bupt.edu.cn/rch/api/v1/cas/callback/"
-  }
+  "message": "说明",
+  "data": {},
+  "error": {}
 }
 ```
 
-### 2. 认证回调（前端发起验证）
+## 3. 配置项与实际网络地址
+### 3.1 必要配置
+- `BUPT_CAS_ENABLED`：是否启用 CAS
+- `BUPT_CAS_SERVER_URL`：CAS 服务器根地址（用于拼接 `/login`、`/logout`、`/serviceValidate` 或 `/p3/serviceValidate`）
+- `BUPT_CAS_SERVICE_URL`：默认 `service`（回调/业务页面地址）
+- `BUPT_CAS_VERSION`：`2.0` 或 `3.0`
+- `FRONTEND_URL`：CAS 登出后默认回跳地址（当 `logout` 未传 `service` 时使用）
 
-**对外地址：** `GET /rch/api/v1/cas/callback/`
-**后端路由：** `GET /api/v1/cas/callback/`
+### 3.2 代码默认值（settings.py）
+- `BUPT_CAS_SERVER_URL` 默认：`https://auth.bupt.edu.cn/authserver`
+- `BUPT_CAS_SERVICE_URL` 默认：`http://10.160.64.18:18088/login`
+- `BUPT_CAS_VERSION` 默认：`3.0`
+- `FRONTEND_URL` 默认：`http://10.160.64.18:18088`
 
-**功能描述：** 统一认证登录成功后会重定向到前端登录页（作为 `service`）；前端读取 URL 中的 `ticket`，并调用该接口进行票据验证与登录。
+### 3.3 当前环境配置（.env）
+- `BUPT_CAS_SERVER_URL`：`https://auth.bupt.edu.cn/authserver`
+- `BUPT_CAS_SERVICE_URL`：`https://zhihui.bupt.edu.cn/login`
+- `BUPT_CAS_VERSION`：`3.0`
+- `FRONTEND_URL`：`https://zhihui.bupt.edu.cn`
 
-**权限要求：**
-- 无需用户登录认证
-- 前端调用访问（携带 `ticket` 与与登录阶段一致的 `service`）
+说明：
+- 对接时 `service` 参数必须与 CAS 发放 ticket 时使用的 service 保持一致（统一认证系统集成文档要求）。
+- `service` 需进行 URL 编码（`urllib.parse.urlencode` 已在服务层实现）。
 
-**查询参数：**
-| 参数名 | 类型 | 必填 | 描述 |
-|--------|------|------|------|
-| ticket | string | 是 | CAS服务器颁发的认证票据 |
-| service | string | 是 | 前端登录页完整地址（必须与登录阶段一致） |
+## 4. CAS标准接口映射（对照统一认证系统集成文档）
+- 登录跳转：`{BUPT_CAS_SERVER_URL}/login?service=...`
+- 登出跳转：`{BUPT_CAS_SERVER_URL}/logout?service=...`
+- 票据验证：
+  - CAS 2.0：`{BUPT_CAS_SERVER_URL}/serviceValidate`
+  - CAS 3.0：`{BUPT_CAS_SERVER_URL}/p3/serviceValidate`
 
-**响应格式：**
+本项目由 `BUPTCASService.validate_ticket()` 根据 `BUPT_CAS_VERSION` 自动选择验证端点。
+
+## 5. 接口说明
+### 5.1 获取 CAS 登录地址
+- 接口：`GET /api/v1/cas/login/`
+- 对外：`GET /rch/api/v1/cas/login/`（如网关前缀为 `/rch`）
+- 权限：`AllowAny`
+- 查询参数：
+  - `service`（可选）：不传时使用 `BUPT_CAS_SERVICE_URL`
+- 行为：
+  - 生成 `login_url`
+  - 写入 `CASAuthLog(action=login, status=pending)`
+- 成功响应示例：
+
 ```json
 {
+  "status": "success",
+  "code": 200,
+  "message": "请重定向到CAS登录页面",
+  "data": {
+    "login_url": "https://auth.bupt.edu.cn/authserver/login?service=https%3A%2F%2Fzhihui.bupt.edu.cn%2Flogin",
+    "service_url": "https://zhihui.bupt.edu.cn/login"
+  },
+  "error": {}
+}
+```
+
+- 失败响应：
+  - `503`：`CAS认证未启用`
+
+### 5.2 CAS 回调（票据验证 + 用户同步 + JWT签发）
+- 接口：`GET /api/v1/cas/callback/`
+- 对外：`GET /rch/api/v1/cas/callback/`
+- 权限：`AllowAny`
+- 查询参数：
+  - `ticket`（必填）
+  - `service`（可选，不传默认 `BUPT_CAS_SERVICE_URL`；建议与登录阶段一致）
+- 行为：
+  1. 调用 CAS 票据验证接口，解析 XML。
+  2. 在本地同步用户（创建或更新）。
+  3. 写入认证日志（`CASAuthLog` + `authentication.LoginLog`）。
+  4. 返回 JWT：`access`、`refresh`。
+- 成功响应示例：
+
+```json
+{
+  "status": "success",
   "code": 200,
   "message": "CAS认证成功",
   "data": {
     "user": {
       "id": 123,
       "username": "2021211001",
-      "real_name": "张三",
-      "email": "zhangsan@bupt.edu.cn",
-      "is_active": true,
-      "organization_profile": {
-        "employee_id": null,
-        "auth_source": "cas",
-        "cas_user_id": "2021211001",
-        "last_cas_login": "2024-01-15T10:30:00Z"
-      },
-      "student_profile": {
-        "student_id": "2021211001",
-        "school": "计算机学院",
-        "major": "计算机科学与技术",
-        "grade": "2021"
-      }
+      "email": "2021211001@bupt.cn",
+      "user_type": "student"
     },
     "auth": {
-      "access": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
-      "refresh": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+      "access": "eyJ...",
+      "refresh": "eyJ..."
     },
     "cas_info": {
       "user_id": "2021211001",
       "is_new_user": false,
       "auth_source": "cas"
     }
-  }
+  },
+  "error": {}
 }
 ```
 
-### 3. 统一登出
+- 常见失败：
+  - `400`：缺少 ticket（`缺少CAS票据`）
+  - `401`：CAS 验证失败（`CAS认证失败: ...`）
+  - `400`：用户同步失败（`用户信息同步失败: ...`）
+  - `500`：回调处理异常（`CAS认证处理失败，请稍后重试`）
+  - `503`：CAS 未启用
 
-**对外地址：** `GET /rch/api/v1/cas/logout/` 或 `POST /rch/api/v1/cas/logout/`
-**后端路由：** `GET/POST /api/v1/cas/logout/`
+### 5.3 CAS 登出（含 JWT 黑名单）
+- 接口：`GET|POST /api/v1/cas/logout/`
+- 对外：`GET|POST /rch/api/v1/cas/logout/`
+- 权限：`AllowAny`
+- 参数：
+  - `service`（可选）：GET 查询或 POST 表单/JSON，默认 `FRONTEND_URL`
+  - `refresh_token`（可选）：用于黑名单单个 token
+- `refresh_token`提取顺序：
+  1. 请求体 `refresh_token`
+  2. Cookie `refresh_token`
+  3. 请求头 `X-Refresh-Token`
+- 行为：
+  - 若可识别登录用户，执行 JWT 黑名单逻辑：
+    - 有 refresh_token：仅拉黑该 token
+    - 无 refresh_token：拉黑该用户全部未拉黑的 outstanding token
+  - 无论 token 处理是否异常，CAS 登出流程继续
+  - 记录 `CASAuthLog(action=logout, status=success)`
+- 成功响应示例：
 
-**功能描述：** 获取CAS登出URL，用于重定向用户到CAS服务器完成全局登出。同时会自动黑名单化用户的JWT token以确保安全登出。
-
-**权限要求：**
-- 无需用户登录认证
-- 公开访问接口
-
-**查询参数（GET）/ 表单参数（POST）：**
-| 参数名 | 类型 | 必填 | 默认值 | 描述 |
-|--------|------|------|--------|------|
-| service | string | 否 | 前端首页URL | 登出后的重定向地址 |
-| refresh_token | string | 否 | - | 刷新令牌（可选，支持请求体、Cookie、请求头多种方式传递） |
-
-**请求头（可选）：**
-| 参数名 | 类型 | 描述 |
-|--------|------|------|
-| Authorization | string | Bearer token（用于识别当前用户） |
-| X-Refresh-Token | string | 刷新令牌（备选传递方式） |
-
-**Cookie（可选）：**
-| 参数名 | 类型 | 描述 |
-|--------|------|------|
-| refresh_token | string | 刷新令牌（备选传递方式） |
-
-**安全机制：**
-- 如果提供了refresh_token，仅黑名单化该特定token
-- 如果未提供refresh_token，将黑名单化用户所有有效的JWT token
-- 即使token处理失败，也不会影响CAS登出流程
-
-**响应格式：**
 ```json
 {
+  "status": "success",
   "code": 200,
   "message": "请重定向到CAS登出页面",
   "data": {
-    "logout_url": "https://auth.bupt.edu.cn/authserver/logout?service=http%3A//localhost%3A3000",
-    "service_url": "http://localhost:3000"
-  }
+    "logout_url": "https://auth.bupt.edu.cn/authserver/logout?service=https%3A%2F%2Fzhihui.bupt.edu.cn",
+    "service_url": "https://zhihui.bupt.edu.cn"
+  },
+  "error": {}
 }
 ```
 
-**使用说明：**
-1. 前端调用此接口获取CAS登出URL
-2. 系统自动处理JWT token黑名单化
-3. 前端重定向用户到返回的logout_url
-4. 用户在CAS服务器完成登出后，会被重定向到service_url
+- 失败响应：
+  - `503`：`CAS认证未启用`
 
-### 4. 配置与状态查询
+### 5.4 CAS 状态查询
+- 接口：`GET /api/v1/cas/status/`
+- 对外：`GET /rch/api/v1/cas/status/`
+- 权限：`AllowAny`
+- 返回字段：
+  - `cas_enabled`
+  - `cas_server_url`（未启用时为 `null`）
+  - `cas_version`
+  - `service_url`（未启用时为 `null`）
+  - `user_cas_info`（仅登录态且存在组织档案时返回）
+- 成功响应示例：
 
-**对外地址：** `GET /rch/api/v1/cas/status/`
-**后端路由：** `GET /api/v1/cas/status/`
-
-**功能描述：** 获取CAS系统的配置状态和当前用户的CAS认证信息
-
-**权限要求：** 
-- 无需用户登录认证
-- 公开访问接口（已登录用户可获取更多信息）
-
-**响应格式：**
 ```json
 {
+  "status": "success",
   "code": 200,
   "message": "CAS状态信息",
   "data": {
     "cas_enabled": true,
     "cas_server_url": "https://auth.bupt.edu.cn/authserver",
     "cas_version": "3.0",
-    "service_url": "http://localhost:8000/api/cas/callback/",
-    "user_cas_info": {
-      "cas_user_id": "2021211001",
-      "auth_source": "cas",
-      "last_cas_login": "2024-01-15T10:30:00Z"
-    }
-  }
+    "service_url": "https://zhihui.bupt.edu.cn/login",
+    "user_cas_info": null
+  },
+  "error": {}
 }
 ```
 
-### 5. 当前用户 CAS 信息
+### 5.5 当前用户 CAS 信息
+- 接口：`GET /api/v1/cas/user-info/`
+- 对外：`GET /rch/api/v1/cas/user-info/`
+- 权限：`IsAuthenticated`
+- 返回内容：
+  - `cas_user_id`
+  - `auth_source`
+  - `last_cas_login`
+  - `is_cas_user`
+  - `recent_auth_logs`（最近 5 条 CASAuthLog）
+- 成功响应示例：
 
-**对外地址：** `GET /rch/api/v1/cas/user-info/`
-**后端路由：** `GET /api/v1/cas/user-info/`
-
-**功能描述：** 获取当前登录用户的CAS认证详细信息和最近的认证日志
-
-**权限要求：** 
-- 需要用户登录认证
-- 只能查看自己的CAS信息
-
-**响应格式：**
 ```json
 {
+  "status": "success",
   "code": 200,
   "message": "用户CAS信息",
   "data": {
     "cas_user_id": "2021211001",
     "auth_source": "cas",
-    "last_cas_login": "2024-01-15T10:30:00Z",
+    "last_cas_login": "2026-04-14T08:00:00+08:00",
     "is_cas_user": true,
     "recent_auth_logs": [
       {
         "action": "登录",
         "status": "成功",
-        "created_at": "2024-01-15T10:30:00Z",
-        "ip_address": "192.168.1.100"
-      },
-      {
-        "action": "票据验证",
-        "status": "成功",
-        "created_at": "2024-01-15T10:29:58Z",
-        "ip_address": "192.168.1.100"
+        "created_at": "2026-04-14T08:00:00+08:00",
+        "ip_address": "10.0.0.1"
       }
     ]
+  },
+  "error": {}
+}
+```
+
+- 常见失败：
+  - `404`：`用户组织信息不存在`
+  - `500`：`获取用户信息失败`
+
+## 6. 用户同步与身份判定（核心实现）
+`cas_auth/services.py::sync_cas_user` 的核心规则如下：
+
+### 6.1 CAS主键与邮箱规则
+- 以 `<cas:user>` 作为系统 `username`
+- CAS 自动创建用户邮箱规则：`{username}@bupt.cn`
+
+### 6.2 教师/学生识别
+- 优先使用本地档案匹配：
+  - `OrganizationUser.employee_id == employeeNumber 或 user_id` -> 倾向教师
+  - `Student.student_id == employeeNumber 或 user_id` -> 倾向学生
+- 编码规则识别（10位数字）：
+  - 第 5 位是 `8` 或 `9` -> 教职工（教师分支）
+- 若规则不明确但本地已有组织档案，也按教师处理
+
+### 6.3 学生分支落库行为
+- `user.user_type = student`
+- 确保存在 `Student` 档案
+- `student.verification` 强制/补齐为 `cas`
+- `grade` 默认取学号前四位（非数字则兜底 `2024`）
+- `school` 默认定位 `BUPT_UNIVERSITY_ID`（默认 13）
+
+### 6.4 教师分支落库行为
+- `user.user_type = organization`
+- 确保存在 `OrganizationUser` 档案
+- `organization` 指向 `BUPT_ORGANIZATION_ID`（默认 1）
+- `permission = member`
+- `status = approved`
+- `auth_source = cas`
+- `cas_user_id = username`
+- `employee_id = employeeNumber 或 username`
+- `last_cas_login = 当前时间`
+
+## 7. 与“学生认证”模块的关联点（最新）
+CAS 登录成功并进入学生分支后，学生档案会设置 `verification='cas'`。这会直接影响 `authentication` 模块中的教育邮箱认证接口：
+
+- `POST /api/v1/auth/student-edu/send-code/`
+- `POST /api/v1/auth/student-edu/verify/`
+
+上述两个接口在代码中对 `verification='cas'` 会返回：
+- `422`：`CAS认证学生无需进行教育邮箱认证`
+
+因此，前端应在用户信息中识别 CAS 学生状态，避免引导其走教育邮箱认证流程。
+
+## 8. 端到端登录流程（推荐前端实现）
+### 8.1 登录流程
+1. 前端调用 `GET /rch/api/v1/cas/login/?service=<前端登录页URL>` 获取 `login_url`。
+2. 浏览器跳转 `login_url` 到统一认证中心。
+3. 用户认证通过后，CAS 重定向到前端 `service`，并携带 `ticket`。
+4. 前端读取 `ticket`，调用 `GET /rch/api/v1/cas/callback/?ticket=...&service=...`。
+5. 后端验证 ticket、同步用户、签发 JWT。
+6. 前端保存 `access`/`refresh`，进入业务页面。
+
+### 8.2 登出流程
+1. 前端调用 `GET 或 POST /rch/api/v1/cas/logout/`（建议携带 `refresh_token`）。
+2. 后端进行 JWT 黑名单处理并返回 `logout_url`。
+3. 前端清理本地 token 并跳转 `logout_url`。
+4. CAS 登出后回跳 `service_url`。
+
+## 9. 前端调用示例
+### 9.1 获取登录地址并跳转
+```javascript
+const service = encodeURIComponent("https://zhihui.bupt.edu.cn/login");
+const res = await fetch(`/rch/api/v1/cas/login/?service=${service}`);
+const data = await res.json();
+if (data.code === 200) {
+  window.location.href = data.data.login_url;
+}
+```
+
+### 9.2 处理回调并换取JWT
+```javascript
+const params = new URLSearchParams(window.location.search);
+const ticket = params.get("ticket");
+if (ticket) {
+  const service = encodeURIComponent("https://zhihui.bupt.edu.cn/login");
+  const res = await fetch(`/rch/api/v1/cas/callback/?ticket=${encodeURIComponent(ticket)}&service=${service}`);
+  const data = await res.json();
+  if (data.code === 200) {
+    localStorage.setItem("access_token", data.data.auth.access);
+    localStorage.setItem("refresh_token", data.data.auth.refresh);
   }
 }
 ```
 
-## 数据模型
-
-### CAS认证日志模型（CASAuthLog）
-
-| 字段名 | 类型 | 描述 |
-|--------|------|------|
-| id | AutoField | 主键ID |
-| user | ForeignKey | 关联用户（认证成功后） |
-| cas_user_id | CharField | CAS用户ID |
-| action | CharField | 操作类型（login/logout/validate） |
-| status | CharField | 状态（success/failed/pending） |
-| ticket | CharField | CAS票据 |
-| service_url | URLField | 服务URL |
-| ip_address | GenericIPAddressField | IP地址 |
-| user_agent | TextField | 用户代理 |
-| error_message | TextField | 错误信息 |
-| response_data | JSONField | CAS服务器响应数据 |
-| created_at | DateTimeField | 创建时间 |
-
-### 用户组织信息模型（OrganizationUser）- CAS相关字段
-
-| 字段名 | 类型 | 描述 |
-|--------|------|------|
-| cas_user_id | CharField | CAS系统返回的用户唯一标识 |
-| auth_source | CharField | 认证来源（manual/cas） |
-| employee_id | CharField | 教师工号 |
-| last_cas_login | DateTimeField | 最后CAS登录时间 |
-
-### 学生信息模型（Student）- CAS相关字段
-
-| 字段名 | 类型 | 描述 |
-|--------|------|------|
-| student_id | CharField | 学号 |
-| school | CharField | 学院 |
-| major | CharField | 专业 |
-| grade | CharField | 年级 |
-
-## CAS认证流程
-
-### 1. 首次登录流程
-
-1. **前端发起登录**：调用 `/rch/api/v1/cas/login/` 获取CAS登录URL
-2. **重定向到CAS**：前端将用户重定向到CAS认证服务器
-3. **用户认证**：用户在CAS服务器完成身份验证
-4. **CAS回调**：CAS服务器重定向到 `/rch/api/v1/cas/callback/` 并携带ticket
-5. **票据验证**：后端验证ticket并获取用户信息
-6. **用户同步**：根据CAS返回的信息创建或更新用户数据
-7. **返回令牌**：返回JWT访问令牌给前端
-
-### 2. 身份识别逻辑
-
-系统会根据CAS返回的属性自动识别用户身份：
-
-- **学生身份识别**：
-  - CAS属性包含 `studentId`、`学号` 等字段
-  - 或者 `cas_user_id` 为纯数字且长度符合学号格式
-
-- **教师身份识别**：
-  - CAS属性包含 `employeeNumber`、`工号` 等字段
-  - 或者 `cas_user_id` 包含字母或特殊字符
-
-### 3. 数据存储策略
-
-- **学生用户**：信息存储在 `User` 和 `Student` 表中
-- **教师用户**：信息存储在 `User` 和 `OrganizationUser` 表中
-- **CAS日志**：所有认证操作记录在 `CASAuthLog` 表中
-
-## 错误码说明
-
-| 错误码 | 描述 | 解决方案 |
-|--------|------|----------|
-| 400 | 请求参数错误 | 检查ticket参数是否存在 |
-| 401 | CAS认证失败 | 票据无效或已过期，重新登录 |
-| 403 | 权限不足 | 确认用户具有相应权限 |
-| 404 | 用户信息不存在 | 检查用户是否已正确同步 |
-| 503 | CAS服务不可用 | CAS认证未启用或配置错误 |
-| 500 | 服务器内部错误 | 联系系统管理员 |
-
-## 配置说明
-
-### 环境变量配置
-
-| 变量名 | 描述 | 默认值 |
-|--------|------|--------|
-| BUPT_CAS_ENABLED | 是否启用CAS认证 | False |
-| BUPT_CAS_SERVER_URL | CAS服务器地址 | https://auth.bupt.edu.cn/authserver |
-| BUPT_CAS_SERVICE_URL | 回调服务地址 | http://localhost:8000/api/cas/callback/ |
-| BUPT_CAS_VERSION | CAS协议版本 | 3.0 |
-| FRONTEND_URL | 前端应用地址 | http://localhost:3000 |
-| CAS_TIMEOUT | CAS请求超时时间 | 30 |
-| CAS_VERIFY_SSL | 是否验证SSL证书 | True |
-
-## 使用示例
-
-### 1. 前端集成CAS登录（对外路径）
-
+### 9.3 登出并跳转CAS
 ```javascript
-// 获取CAS登录URL
-const response = await fetch('/rch/api/v1/cas/login/');
-const data = await response.json();
-
+const refreshToken = localStorage.getItem("refresh_token");
+const res = await fetch("/rch/api/v1/cas/logout/", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    service: "https://zhihui.bupt.edu.cn",
+    refresh_token: refreshToken
+  })
+});
+const data = await res.json();
 if (data.code === 200) {
-    // 重定向到CAS登录页面
-    window.location.href = data.data.login_url;
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("refresh_token");
+  window.location.href = data.data.logout_url;
 }
 ```
-
-### 2. 处理CAS回调（对外路径）
-
-```javascript
-// CAS回调页面处理
-const urlParams = new URLSearchParams(window.location.search);
-const ticket = urlParams.get('ticket');
-
-if (ticket) {
-    // 后端会自动处理ticket验证和用户登录
-    // 前端只需要从回调中获取认证结果
-const response = await fetch(`/rch/api/v1/cas/callback/${window.location.search}`);
-    const data = await response.json();
-    
-    if (data.code === 200) {
-        // 保存访问令牌
-        localStorage.setItem('access_token', data.data.auth.access);
-        localStorage.setItem('refresh_token', data.data.auth.refresh);
-        
-        // 跳转到主页
-        window.location.href = '/dashboard';
-    }
-}
-```
-
-### 3. CAS登出（对外路径）
-
-```javascript
-// 获取CAS登出URL
-const response = await fetch('/rch/api/v1/cas/logout/');
-const data = await response.json();
-
-if (data.code === 200) {
-    // 清除本地令牌
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    
-    // 重定向到CAS登出页面
-    window.location.href = data.data.logout_url;
-}
-```
-
-### 4. 检查CAS状态（对外路径）
-
-```bash
-# 检查CAS配置状态
-curl -X GET 'https://llm.bupt.edu.cn/rch/api/v1/cas/status/' \
-  -H 'Content-Type: application/json'
-```
-
-### 5. 获取用户CAS信息（对外路径）
-
-```bash
-# 获取当前用户的CAS认证信息
-curl -X GET 'https://llm.bupt.edu.cn/rch/api/v1/cas/user-info/' \
-  -H 'Authorization: Bearer your_access_token'
-```
-
-## 注意事项
-
-1. **安全性**：
-   - 所有CAS通信都应使用HTTPS
-   - 票据（ticket）具有时效性，通常几分钟内过期
-   - 系统会记录所有认证操作的IP地址和用户代理
-
-2. **兼容性**：
-   - 支持CAS 2.0和CAS 3.0协议
-   - 兼容北京邮电大学统一认证平台
-   - 支持学生和教师身份的自动识别
-
-3. **性能优化**：
-   - CAS认证日志表已添加索引优化查询性能
-   - 用户信息同步使用数据库事务确保数据一致性
-
-4. **错误处理**：
-   - 所有CAS操作都有详细的日志记录
-   - 认证失败时会记录具体的错误信息
-   - 支持重试机制和降级处理
-
-5. **数据同步**：
-   - 首次CAS登录会自动创建用户账户
-   - 后续登录会更新用户的CAS相关信息
-   - 支持学生和教师信息的分别存储
-
-## 版本信息
-
-- **当前版本**：v1.0
-- **最后更新**：2024-01-15
-- **兼容性**：Django 4.x, Django REST Framework 3.x, CAS 2.0/3.0
-- **依赖项**：requests, xml.etree.ElementTree, djangorestframework-simplejwt

@@ -8,7 +8,7 @@ from django.utils.crypto import get_random_string
 import logging
 from .models import (
     User, Student, StudentKeyword, Tag1, Tag2, Tag1StuMatch, Tag2StuMatch,
-    OrganizationUser
+    OrganizationUser, StudentProfileCurrent, StudentProfileEvidence
 )
 
 logger = logging.getLogger(__name__)
@@ -441,6 +441,30 @@ class Tag2Admin(admin.ModelAdmin):
     def get_student_count(self, obj):
         return obj.tag2stumatch_set.count()
     get_student_count.short_description = '关联学生数'
+
+
+@admin.register(StudentProfileCurrent)
+class StudentProfileCurrentAdmin(admin.ModelAdmin):
+    """学生推荐画像当前态管理"""
+
+    list_display = ['id', 'student', 'updated_at']
+    search_fields = ['student__user__username', 'student__user__real_name', 'student__student_id']
+    ordering = ['-updated_at']
+
+
+@admin.register(StudentProfileEvidence)
+class StudentProfileEvidenceAdmin(admin.ModelAdmin):
+    """学生推荐画像证据管理"""
+
+    list_display = ['id', 'student', 'evidence_type', 'source', 'session_id', 'created_at']
+    list_filter = ['evidence_type', 'source', 'created_at']
+    search_fields = [
+        'student__user__username',
+        'student__user__real_name',
+        'student__student_id',
+        'evidence_text'
+    ]
+    ordering = ['-created_at']
 
 
 # @admin.register(StudentKeyword)

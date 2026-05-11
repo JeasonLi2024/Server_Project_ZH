@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from openai import OpenAI
 from django.conf import settings
 from langchain_core.documents import Document
@@ -9,9 +10,12 @@ from pymilvus import connections, Collection, utility, DataType, FieldSchema, Co
 logger = logging.getLogger(__name__)
 
 # 配置 Milvus 连接
-MILVUS_HOST = os.getenv('MILVUS_HOST', 'localhost')
-MILVUS_PORT = os.getenv('MILVUS_PORT', '19530')
+MILVUS_HOST = os.getenv('MILVUS_HOST') or getattr(settings, 'MILVUS_HOST', '10.160.64.18')
+MILVUS_PORT = str(os.getenv('MILVUS_PORT') or getattr(settings, 'MILVUS_PORT', '19530'))
 MILVUS_ALIAS = 'default'
+MILVUS_CONNECT_TIMEOUT = float(os.getenv('MILVUS_CONNECT_TIMEOUT', '1.0'))
+MILVUS_UNAVAILABLE_TTL = int(os.getenv('MILVUS_UNAVAILABLE_TTL', '30'))
+_MILVUS_UNAVAILABLE_KEY = 'milvus_connection_unavailable_until'
 
 # 向量集合名称
 COLLECTION_EMBEDDINGS = 'project_embeddings'
@@ -182,7 +186,7 @@ class RecommendationService:
         return dynamic_tag1_ids, dynamic_tag2_ids
 
     @staticmethod
-    def calculate_user_vector(user_id, student_profile):
+    def calculate_user_vector(user_id, student_profile, defer_on_cache_miss=False):
         """计算用户查询向量 (静态 + 动态融合)"""
         from django.core.cache import cache
         from user.services import UserHistoryService
@@ -192,18 +196,48 @@ class RecommendationService:
         user_query_vector = cache.get(user_vector_cache_key)
 
         if not user_query_vector:
+            if defer_on_cache_miss:
+                return None
+
             try:
                 # 1.1 静态画像文本
                 skill_names = list(student_profile.skills.values_list('post', flat=True))
                 interest_names = list(student_profile.interests.values_list('value', flat=True))
-                static_profile_text = f"User Interests: {', '.join(interest_names)}\nUser Skills: {', '.join(skill_names)}"
+                profile_summary = ""
+                candidate_interest_tags_json = []
+                candidate_skill_tags_json = []
+                try:
+                    profile_current = student_profile.recommend_profile_current
+                    profile_summary = getattr(profile_current, 'profile_summary', '') or ''
+                    candidate_interest_tags_json = getattr(profile_current, 'candidate_interest_tags_json', None) or []
+                    candidate_skill_tags_json = getattr(profile_current, 'candidate_skill_tags_json', None) or []
+                except Exception:
+                    pass
+
+                static_profile_parts = []
+                if profile_summary:
+                    static_profile_parts.append(f"Profile Summary: {profile_summary}")
+                if interest_names:
+                    static_profile_parts.append(f"User Interests: {', '.join(interest_names)}")
+                if skill_names:
+                    static_profile_parts.append(f"User Skills: {', '.join(skill_names)}")
+                if candidate_interest_tags_json:
+                    static_profile_parts.append(
+                        f"Candidate Interest Tags: {json.dumps(candidate_interest_tags_json, ensure_ascii=False)}"
+                    )
+                if candidate_skill_tags_json:
+                    static_profile_parts.append(
+                        f"Candidate Skill Tags: {json.dumps(candidate_skill_tags_json, ensure_ascii=False)}"
+                    )
+
+                static_profile_text = "\n".join(static_profile_parts)
                 
                 # 1.2 获取最近浏览历史 (动态部分)
                 recent_viewed_ids = UserHistoryService.get_recent_viewed_items(user_id, limit=5)
                 
                 # 1.3 计算向量
                 # A. 静态向量
-                static_vector = generate_embedding(static_profile_text)
+                static_vector = generate_embedding(static_profile_text) if static_profile_text else None
                 
                 # B. 动态向量 (最近浏览的平均值)
                 dynamic_vector = None
@@ -239,7 +273,7 @@ class RecommendationService:
         return user_query_vector
 
     @staticmethod
-    def generate_candidates(user_id, student_profile=None):
+    def generate_candidates(user_id, student_profile=None, defer_vector_on_cache_miss=False):
         """
         生成推荐候选集 (核心逻辑)
         返回: candidate_ids (List[int])
@@ -256,13 +290,64 @@ class RecommendationService:
             # 准备数据
             if not student_profile:
                 from user.models import Student
-                student_profile = Student.objects.select_related('user').get(user_id=user_id)
+                student_profile = Student.objects.select_related('user', 'recommend_profile_current').get(user_id=user_id)
                 
             skill_ids = list(student_profile.skills.values_list('id', flat=True))
             interest_ids = list(student_profile.interests.values_list('id', flat=True))
+
+            def _extract_tag_ids(data):
+                if not data:
+                    return []
+                extracted = []
+                if isinstance(data, list):
+                    items = data
+                else:
+                    items = [data]
+                for item in items:
+                    if isinstance(item, bool):
+                        continue
+                    if isinstance(item, int):
+                        extracted.append(item)
+                        continue
+                    if isinstance(item, str):
+                        s = item.strip()
+                        if s.isdigit():
+                            extracted.append(int(s))
+                        continue
+                    if isinstance(item, dict):
+                        for key in ('id', 'tag_id', 'tagId', 'tag'):
+                            val = item.get(key)
+                            if isinstance(val, bool):
+                                continue
+                            if isinstance(val, int):
+                                extracted.append(val)
+                                break
+                            if isinstance(val, str) and val.strip().isdigit():
+                                extracted.append(int(val.strip()))
+                                break
+                return extracted
+
+            profile_summary = ""
+            candidate_interest_tag_ids = []
+            candidate_skill_tag_ids = []
+            try:
+                profile_current = student_profile.recommend_profile_current
+                profile_summary = getattr(profile_current, 'profile_summary', '') or ''
+                candidate_interest_tag_ids = _extract_tag_ids(
+                    getattr(profile_current, 'candidate_interest_tags_json', None) or []
+                )
+                candidate_skill_tag_ids = _extract_tag_ids(
+                    getattr(profile_current, 'candidate_skill_tags_json', None) or []
+                )
+            except Exception:
+                pass
             
             # === 1. 构建用户动态查询向量 ===
-            user_query_vector = RecommendationService.calculate_user_vector(user_id, student_profile)
+            user_query_vector = RecommendationService.calculate_user_vector(
+                user_id,
+                student_profile,
+                defer_on_cache_miss=defer_vector_on_cache_miss
+            )
 
             # === 2. A路召回 (语义路) ===
             path_a_results = {} # {id: similarity_score}
@@ -279,8 +364,8 @@ class RecommendationService:
             # 获取动态标签
             dynamic_tag1_ids, dynamic_tag2_ids = RecommendationService.get_dynamic_tags(user_id)
             
-            combined_skill_ids = list(set(skill_ids + dynamic_tag2_ids))
-            combined_interest_ids = list(set(interest_ids + dynamic_tag1_ids))
+            combined_skill_ids = list(set(skill_ids + dynamic_tag2_ids + candidate_skill_tag_ids))
+            combined_interest_ids = list(set(interest_ids + dynamic_tag1_ids + candidate_interest_tag_ids))
             
             # 获取 A 路召回的 ID 集合
             path_a_ids = list(path_a_results.keys())
@@ -383,13 +468,31 @@ def generate_embedding(text):
         return []
 
 def ensure_milvus_connection():
+    from django.core.cache import cache
+
+    unavailable_until = cache.get(_MILVUS_UNAVAILABLE_KEY)
+    now = time.time()
+    if unavailable_until and now < float(unavailable_until):
+        logger.warning("Milvus is temporarily marked unavailable, skip connect attempt")
+        return False
+
     try:
-        connections.connect(alias=MILVUS_ALIAS, host=MILVUS_HOST, port=MILVUS_PORT)
+        connections.connect(
+            alias=MILVUS_ALIAS,
+            host=MILVUS_HOST,
+            port=MILVUS_PORT,
+            timeout=MILVUS_CONNECT_TIMEOUT
+        )
+        cache.delete(_MILVUS_UNAVAILABLE_KEY)
+        return True
     except Exception as e:
         logger.error(f"Failed to connect to Milvus: {e}")
+        cache.set(_MILVUS_UNAVAILABLE_KEY, now + MILVUS_UNAVAILABLE_TTL, timeout=MILVUS_UNAVAILABLE_TTL)
+        return False
 
 def get_or_create_collection(collection_name, dim=1536):
-    ensure_milvus_connection()
+    if not ensure_milvus_connection():
+        return None
     
     if utility.has_collection(collection_name):
         return Collection(collection_name)
@@ -466,6 +569,9 @@ def sync_requirement_vectors(requirement):
         delete_requirement_vectors(requirement.id, collection_names=[COLLECTION_EMBEDDINGS])
         
         collection = get_or_create_collection(COLLECTION_EMBEDDINGS)
+        if collection is None:
+            logger.warning(f"Milvus unavailable, skip semantic vector sync for requirement {requirement.id}")
+            return
         
         data = [
             [requirement.id],  # project_id
@@ -645,6 +751,9 @@ def sync_raw_docs_from_text(requirement_id, text):
         delete_requirement_vectors(requirement_id, [COLLECTION_RAW_DOCS])
         
         collection = get_or_create_collection(COLLECTION_RAW_DOCS)
+        if collection is None:
+            logger.warning(f"Milvus unavailable, skip raw docs sync for requirement {requirement_id}")
+            return
         
         pids = [requirement_id] * len(final_vectors)
         data = [
@@ -665,7 +774,8 @@ def delete_requirement_vectors(requirement_id, collection_names=None):
     """
     删除指定需求的所有向量数据
     """
-    ensure_milvus_connection()
+    if not ensure_milvus_connection():
+        return
     
     if collection_names is None:
         collection_names = [COLLECTION_EMBEDDINGS, COLLECTION_RAW_DOCS]
@@ -684,7 +794,8 @@ def search_similar_requirements(query_vector, top_k=200):
     """
     使用向量搜索相似需求 (A路召回)
     """
-    ensure_milvus_connection()
+    if not ensure_milvus_connection():
+        return []
     try:
         collection = Collection(COLLECTION_EMBEDDINGS)
         collection.load()
@@ -720,7 +831,8 @@ def get_vectors_by_ids(ids):
     if not ids:
         return []
     
-    ensure_milvus_connection()
+    if not ensure_milvus_connection():
+        return []
     try:
         collection = Collection(COLLECTION_EMBEDDINGS)
         collection.load()
